@@ -15,15 +15,15 @@ G700 Clock & Weather is a stripped-down Android Automotive utility for the Jetou
 ## Permissions requested on launch
 
 - `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION`
-  Required for local weather.
+  Requested only when `Internet weather` is enabled, so the app can resolve online weather for the current position.
 - `ACCESS_BACKGROUND_LOCATION`
-  Needed so weather refreshes can continue after boot.
+  Requested only when `Internet weather` is enabled and background refresh is allowed after boot.
 - `POST_NOTIFICATIONS`
   Required for the foreground service notification on Android 13+.
 - Battery optimization exemption
   Requested so the boot/runtime service is less likely to be killed.
 
-The app also declares `REQUEST_INSTALL_PACKAGES` so it can hand off a downloaded APK to the Android package installer when an update is available.
+The app also declares `REQUEST_INSTALL_PACKAGES` so it can hand off a downloaded APK to the Android package installer when an update is available, and `android.car.permission.CAR_EXTERIOR_ENVIRONMENT` so it can read the vehicle outside temperature through the car property API.
 
 ## Update feed layout
 
