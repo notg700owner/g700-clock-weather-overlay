@@ -16,7 +16,7 @@ private const val EXTERNAL_TEMP_GETTER = "getEXTERNALTEMPERATURE_C"
 private const val EXTERNAL_TEMP_CALLBACK = "onEXTERNALTEMPERATURE_C"
 private const val VEHICLE_SOURCE_LABEL = "Vehicle API"
 private val TEMPERATURE_GETTER_NAMES = listOf(
-    "getEXTERNALTEMPERATURE_C",
+    AutolinkMethodCatalog.OUTDOOR_TEMP_GETTER,
     "getOutdoorTemp",
     "outdoorTemp"
 )
@@ -120,6 +120,8 @@ internal class VehicleTemperatureSource(private val context: Context) {
             candidates.putIfAbsent(key, ManagerCandidate(instance, releaseAction))
         }
 
+        discoverAutolinkManager()?.let { addCandidate(it.instance, it.releaseAction) }
+
         listOf(
             "car",
             "vehicle",
@@ -131,15 +133,11 @@ internal class VehicleTemperatureSource(private val context: Context) {
             addCandidate(runCatching { context.getSystemService(serviceName) }.getOrNull())
         }
 
-        discoverContextServiceFields(::addCandidate)
-
         val carClass = runCatching { Class.forName("android.car.Car") }.getOrNull()
         val carInstance = createCarInstance(carClass)
         val carReleaseAction = carInstance?.let(::buildReleaseAction)
 
         addCandidate(carInstance, carReleaseAction)
-        discoverNestedManagers(context, null, ::addCandidate)
-        discoverNestedManagers(context.applicationContext, null, ::addCandidate)
 
         if (carClass != null && carInstance != null) {
             val getCarManager = allMethods(carClass).firstOrNull { method ->
@@ -182,24 +180,32 @@ internal class VehicleTemperatureSource(private val context: Context) {
         return candidates.values.toList()
     }
 
-    private fun discoverContextServiceFields(addCandidate: (Any?, (() -> Unit)?) -> Unit) {
-        allFields(Context::class.java)
-            .filter { field ->
-                Modifier.isStatic(field.modifiers) &&
-                    field.type == String::class.java &&
-                    field.name.endsWith("_SERVICE")
-            }
-            .mapNotNull { field -> runCatching { field.get(null) as? String }.getOrNull() }
-            .distinct()
-            .forEach { serviceName ->
-                val service = runCatching { context.getSystemService(serviceName) }.getOrNull() ?: return@forEach
-                val serviceNameMatches = serviceName.contains("car", ignoreCase = true) ||
-                    serviceName.contains("vehicle", ignoreCase = true)
-                if (serviceNameMatches || mayExposeExternalTemperature(service.javaClass)) {
-                    addCandidate(service, null)
-                    discoverNestedManagers(service, null, addCandidate)
-                }
-            }
+    private fun discoverAutolinkManager(): ManagerCandidate? {
+        val apiClass = runCatching { Class.forName(AutolinkMethodCatalog.API_CLASS) }.getOrNull()
+            ?: return null
+        runCatching { Class.forName(AutolinkMethodCatalog.CAR_MANAGER_CLASS) }
+        val createApi = allMethods(apiClass).firstOrNull { method ->
+            Modifier.isStatic(method.modifiers) &&
+                method.name == "createApi" &&
+                method.parameterCount == 1 &&
+                method.parameterTypes[0] == Context::class.java
+        } ?: return null
+        val apiInstance = runCatching { createApi.invoke(null, context.applicationContext) }.getOrNull()
+            ?: return null
+        val getManager = allMethods(apiInstance.javaClass).firstOrNull { method ->
+            method.name == "getManager" &&
+                method.parameterCount == 1 &&
+                method.parameterTypes[0] == String::class.java
+        } ?: return null
+        val manager = runCatching {
+            getManager.invoke(apiInstance, "car")
+        }.getOrNull() ?: return null
+        val releaseAction = combineReleaseActions(
+            buildReleaseAction(manager),
+            buildReleaseAction(apiInstance)
+        )
+        AppLogger.log(TAG, "Autolink manager ready: ${manager.javaClass.name}")
+        return ManagerCandidate(manager, releaseAction)
     }
 
     private fun createCarInstance(carClass: Class<*>?): Any? {
@@ -230,10 +236,17 @@ internal class VehicleTemperatureSource(private val context: Context) {
     }
 
     private fun mayExposeExternalTemperature(type: Class<*>): Boolean {
-        return type.simpleName.contains("Manager", ignoreCase = true) ||
-            type.simpleName.contains("Vehicle", ignoreCase = true) ||
-            type.simpleName.contains("Car", ignoreCase = true) ||
+        return isRelevantVehicleType(type) ||
             findExternalTemperatureAccessor(type) != null
+    }
+
+    private fun isRelevantVehicleType(type: Class<*>): Boolean {
+        val name = type.name
+        val simpleName = type.simpleName
+        return name.contains("autolink", ignoreCase = true) ||
+            name.contains(".car.", ignoreCase = true) ||
+            simpleName.contains("Car", ignoreCase = true) ||
+            simpleName.contains("Vehicle", ignoreCase = true)
     }
 
     private fun findExternalTemperatureAccessor(type: Class<*>): TemperatureAccessor? {
@@ -490,13 +503,22 @@ internal class VehicleTemperatureSource(private val context: Context) {
                         mayExposeExternalTemperature(method.returnType) ||
                             method.name.contains("manager", ignoreCase = true) ||
                             method.name.contains("vehicle", ignoreCase = true) ||
-                            method.name.contains("car", ignoreCase = true)
+                            method.name.contains("car", ignoreCase = true) ||
+                            method.name.contains("autolink", ignoreCase = true)
                         )
             }
             .forEach { method ->
                 val nested = runCatching { method.invoke(owner) }.getOrNull()
-                addCandidate(nested, releaseAction)
+                if (nested != null && mayExposeExternalTemperature(nested.javaClass)) {
+                    addCandidate(nested, releaseAction)
+                }
             }
+    }
+
+    private fun combineReleaseActions(vararg actions: (() -> Unit)?): (() -> Unit)? {
+        val validActions = actions.filterNotNull()
+        if (validActions.isEmpty()) return null
+        return { validActions.forEach { runCatching { it.invoke() } } }
     }
 
     private fun recordDiagnostic(message: String) {
