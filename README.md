@@ -6,6 +6,7 @@ G700 Clock & Weather is a stripped-down Android Automotive utility for the Jetou
 
 - A simplified car-style control screen with one toggle for the clock and one toggle for the weather.
 - An optional `Internet weather` switch under the weather card. When it is off, the app uses the car API outside temperature. When it is on and connectivity is available, the app uses online weather and falls back to the car temperature automatically.
+- The local vehicle temperature path prefers `carManager.getEXTERNALTEMPERATURE_C()` and subscribes to `onEXTERNALTEMPERATURE_C(float)` updates when that callback surface exists on the head unit.
 - A hidden calibration page opened from `Calibrate`, with `-100`, `-10`, `-1`, `+1`, `+10`, and `+100` nudges for clock and weather X/Y offsets.
 - A protected foreground service that auto-starts after boot, waits through a settle delay, and blocks future auto-starts after repeated unhealthy launches.
 - A secondary-display overlay using the Android `Presentation` API, so it targets HDMI / display 2 without `SYSTEM_ALERT_WINDOW`.

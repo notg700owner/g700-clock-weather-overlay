@@ -30,6 +30,7 @@ class AutomationForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var settingsJob: Job? = null
     private var weatherJob: Job? = null
+    private var vehicleTemperatureJob: Job? = null
     private var settings: AutomationSettings = AutomationSettings().normalized()
     private lateinit var overlayManager: HdmiOverlayManager
     private lateinit var weatherRepository: LocationWeatherRepository
@@ -50,6 +51,7 @@ class AutomationForegroundService : Service() {
 
         settings = AutomationSettingsStore.load(this).normalized()
         weatherRepository = LocationWeatherRepository(applicationContext)
+        weatherRepository.start()
         overlayManager = HdmiOverlayManager(
             context = applicationContext,
             scope = scope,
@@ -69,6 +71,7 @@ class AutomationForegroundService : Service() {
 
         overlayManager.start()
         observeSettings()
+        observeVehicleTemperature()
         startWeatherLoop()
         ServiceRuntimeBus.set(
             ServiceRuntimeState(
@@ -119,6 +122,8 @@ class AutomationForegroundService : Service() {
     override fun onDestroy() {
         settingsJob?.cancel()
         weatherJob?.cancel()
+        vehicleTemperatureJob?.cancel()
+        weatherRepository.stop()
         overlayManager.stop()
         ServiceRuntimeBus.reset()
         scope.cancel()
@@ -149,6 +154,44 @@ class AutomationForegroundService : Service() {
         }
     }
 
+    private fun observeVehicleTemperature() {
+        vehicleTemperatureJob?.cancel()
+        vehicleTemperatureJob = scope.launch {
+            weatherRepository.vehicleTemperatureUpdates.collectLatest { result ->
+                result ?: return@collectLatest
+                val wantsWeather = settings.overlay.weatherEnabled || settings.overlay.calibrationMode
+                if (!wantsWeather) return@collectLatest
+
+                val currentWeather = ServiceRuntimeBus.state.value.weatherState
+                val shouldUseVehicleReading = !settings.overlay.internetWeatherEnabled ||
+                    currentWeather == null ||
+                    currentWeather.sourceLabel == "Vehicle API"
+
+                if (!shouldUseVehicleReading) return@collectLatest
+
+                ServiceRuntimeBus.update {
+                    it.copy(
+                        serviceRunning = true,
+                        phase = if (result.errorMessage == null) ServiceRuntimePhase.RUNNING else ServiceRuntimePhase.DEGRADED,
+                        overlayArmed = settings.overlay.shouldRenderAnything(),
+                        clockVisible = settings.overlay.clockEnabled || settings.overlay.calibrationMode,
+                        weatherVisible = settings.overlay.weatherEnabled || settings.overlay.calibrationMode,
+                        weatherState = result.state,
+                        weatherStatus = if (settings.overlay.internetWeatherEnabled) {
+                            "Using vehicle temperature until internet weather is available."
+                        } else {
+                            result.status
+                        },
+                        lastWeatherRefreshAt = System.currentTimeMillis(),
+                        lastAction = "Vehicle temperature updated",
+                        lastError = result.errorMessage,
+                        activeOverlays = settings.enabledOverlayLabels()
+                    )
+                }
+            }
+        }
+    }
+
     private fun startWeatherLoop() {
         weatherJob?.cancel()
         weatherJob = scope.launch {
@@ -156,7 +199,12 @@ class AutomationForegroundService : Service() {
                 runCatching {
                     val wantsWeather = settings.overlay.weatherEnabled || settings.overlay.calibrationMode
                     if (wantsWeather) {
-                        refreshWeather()
+                        val shouldPollWeather = settings.overlay.internetWeatherEnabled ||
+                            !weatherRepository.hasVehicleTemperatureSubscription ||
+                            ServiceRuntimeBus.state.value.weatherState == null
+                        if (shouldPollWeather) {
+                            refreshWeather()
+                        }
                     } else {
                         ServiceRuntimeBus.update {
                             it.copy(
@@ -182,7 +230,14 @@ class AutomationForegroundService : Service() {
                         )
                     }
                 }
-                delay(if (settings.overlay.weatherEnabled || settings.overlay.calibrationMode) WEATHER_REFRESH_MS else IDLE_REFRESH_MS)
+                delay(
+                    when {
+                        !(settings.overlay.weatherEnabled || settings.overlay.calibrationMode) -> IDLE_REFRESH_MS
+                        settings.overlay.internetWeatherEnabled -> WEATHER_REFRESH_MS
+                        weatherRepository.hasVehicleTemperatureSubscription -> IDLE_REFRESH_MS
+                        else -> VEHICLE_FALLBACK_POLL_MS
+                    }
+                )
             }
         }
     }
@@ -231,6 +286,7 @@ class AutomationForegroundService : Service() {
         private const val CHANNEL_ID = "automation_runtime"
         private const val NOTIFICATION_ID = 701
         private const val WEATHER_REFRESH_MS = 15 * 60 * 1_000L
+        private const val VEHICLE_FALLBACK_POLL_MS = 60 * 1_000L
         private const val IDLE_REFRESH_MS = 60 * 1_000L
     }
 }

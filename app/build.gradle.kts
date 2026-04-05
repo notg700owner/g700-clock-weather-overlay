@@ -24,8 +24,8 @@ android {
         applicationId = "com.g700.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 3
+        versionName = "2.0.1"
 
         buildConfigField("String", "UPDATE_OWNER", "\"${updateOwner.get()}\"")
         buildConfigField("String", "UPDATE_REPO", "\"${updateRepo.get()}\"")

@@ -10,6 +10,7 @@ import android.net.NetworkCapabilities
 import androidx.core.content.ContextCompat
 import com.g700.automation.overlay.OverlayWeatherState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -22,8 +23,23 @@ data class WeatherFetchResult(
 )
 
 class LocationWeatherRepository(private val context: Context) {
+    private val vehicleTemperatureSource = VehicleTemperatureSource(context.applicationContext)
+
+    val vehicleTemperatureUpdates: StateFlow<WeatherFetchResult?> = vehicleTemperatureSource.updates
+
+    val hasVehicleTemperatureSubscription: Boolean
+        get() = vehicleTemperatureSource.hasActiveSubscription
+
+    fun start() {
+        vehicleTemperatureSource.start()
+    }
+
+    fun stop() {
+        vehicleTemperatureSource.stop()
+    }
+
     suspend fun refresh(preferInternetWeather: Boolean): WeatherFetchResult = withContext(Dispatchers.IO) {
-        val vehicleWeather = readCarOutsideTemperature()
+        val vehicleWeather = vehicleTemperatureSource.latestResult()
 
         if (!preferInternetWeather) {
             return@withContext vehicleWeather ?: WeatherFetchResult(
@@ -102,36 +118,6 @@ class LocationWeatherRepository(private val context: Context) {
             ),
             status = "Weather updated from Open-Meteo."
         )
-    }
-
-    private fun readCarOutsideTemperature(): WeatherFetchResult? {
-        return runCatching {
-            val carClass = Class.forName("android.car.Car")
-            val createCar = carClass.getMethod("createCar", Context::class.java)
-            val car = createCar.invoke(null, context)
-            val propertyService = carClass.getField("PROPERTY_SERVICE").get(null) as String
-            val getCarManager = carClass.getMethod("getCarManager", String::class.java)
-            val propertyManager = getCarManager.invoke(car, propertyService)
-            val getFloatProperty = propertyManager.javaClass.getMethod(
-                "getFloatProperty",
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType
-            )
-            val propertyIdsClass = Class.forName("android.car.VehiclePropertyIds")
-            val outsideTempProperty = propertyIdsClass.getField("ENV_OUTSIDE_TEMPERATURE").getInt(null)
-            val rawValue = getFloatProperty.invoke(propertyManager, outsideTempProperty, 0) as Float
-            if (rawValue.isNaN()) {
-                null
-            } else {
-                WeatherFetchResult(
-                    state = OverlayWeatherState(
-                        outsideTemperatureC = rawValue,
-                        sourceLabel = "Vehicle API"
-                    ),
-                    status = "Using vehicle temperature."
-                )
-            }
-        }.getOrNull()
     }
 
     private fun isInternetConnected(): Boolean {
