@@ -2,6 +2,8 @@
 
 G700 Clock & Weather is a stripped-down Android Automotive utility for the Jetour G700 head unit. The app now does one job: keep a clock and optional weather overlay on the secondary HDMI-style display, with protected boot auto-start, a hidden calibration page, and GitHub-backed self-update checks.
 
+Package ID: `com.g700.clockweather`
+
 ## What this build includes
 
 - A simplified car-style control screen with one toggle for the clock and one toggle for the weather.

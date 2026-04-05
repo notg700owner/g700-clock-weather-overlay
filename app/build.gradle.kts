@@ -17,15 +17,15 @@ val updateBranch = providers.gradleProperty("updateBranch").orElse("main")
 val updateMetadataPath = providers.gradleProperty("updateMetadataPath").orElse("update/update.json")
 
 android {
-    namespace = "com.g700.automation"
+    namespace = "com.g700.clockweather"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.g700.automation"
+        applicationId = "com.g700.clockweather"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.0.1"
+        versionCode = 4
+        versionName = "2.1.0"
 
         buildConfigField("String", "UPDATE_OWNER", "\"${updateOwner.get()}\"")
         buildConfigField("String", "UPDATE_REPO", "\"${updateRepo.get()}\"")
@@ -83,17 +83,13 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
 
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
-
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.5")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.5")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.5")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
 
     implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
 
