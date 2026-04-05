@@ -10,27 +10,22 @@ import android.provider.Settings
 import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -38,7 +33,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -54,17 +48,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.g700.clockweather.models.AppUiState
-import com.g700.clockweather.models.OverlaySettings
-import com.g700.clockweather.overlay.OverlayPreviewCanvas
 import com.g700.clockweather.startup.StartupPhase
 import com.g700.clockweather.viewmodel.AppViewModel
 import java.text.SimpleDateFormat
@@ -77,17 +67,24 @@ private enum class DeckPage {
 }
 
 private data class PermissionSnapshot(
-    val locationGranted: Boolean,
-    val backgroundLocationGranted: Boolean,
-    val notificationGranted: Boolean,
-    val batteryOptimizedIgnored: Boolean,
     val installPermissionGranted: Boolean
 )
+
+private val ScreenBlack = Color(0xFF0A0A0A)
+private val ScreenBlackSoft = Color(0xFF101010)
+private val PanelBlack = Color(0xFF141414)
+private val BorderGray = Color(0xFF2A2A2A)
+private val TextPrimary = Color(0xFFF0F0F0)
+private val TextMuted = Color(0xFF8E8E8E)
+private val AccentTeal = Color(0xFF21D8E3)
+private val ActiveTile = Color(0xFFD8D8D8)
+private val ActiveText = Color(0xFF171717)
+private val ErrorTint = Color(0xFFFF9B97)
 
 @Composable
 fun ClockWeatherApp(viewModel: AppViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var page by rememberSaveable { mutableStateOf(DeckPage.MAIN) }
+    var page: DeckPage by rememberSaveable { mutableStateOf(DeckPage.MAIN) }
     val context = LocalContext.current
     val permissions = rememberPermissionSnapshot(context)
 
@@ -96,17 +93,7 @@ fun ClockWeatherApp(viewModel: AppViewModel) {
         requestInternetWeatherPermissions = uiState.settings.overlay.internetWeatherEnabled
     )
 
-    DeckShell(
-        page = page,
-        uiState = uiState,
-        preview = {
-            PreviewPanel(
-                settings = previewOverlaySettings(uiState.settings.overlay),
-                uiState = uiState,
-                modifier = Modifier.fillMaxHeight()
-            )
-        }
-    ) {
+    AppFrame {
         when (page) {
             DeckPage.MAIN -> MainControlScreen(
                 uiState = uiState,
@@ -118,7 +105,6 @@ fun ClockWeatherApp(viewModel: AppViewModel) {
                     viewModel.startOverlayCalibration()
                     page = DeckPage.CALIBRATION
                 },
-                onRefresh = viewModel::refresh,
                 onCheckForUpdate = { viewModel.checkForUpdates(silent = false) },
                 onInstallUpdate = viewModel::installUpdate,
                 onOpenInstallSettings = { openUnknownAppsSettings(context) },
@@ -218,196 +204,55 @@ private fun PermissionLaunchCoordinator(
 }
 
 @Composable
-private fun DeckShell(
-    page: DeckPage,
-    uiState: AppUiState,
-    preview: @Composable () -> Unit,
-    content: @Composable () -> Unit
-) {
-    val isWide = LocalConfiguration.current.screenWidthDp >= 960
+private fun AppFrame(content: @Composable ColumnScope.() -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF05060E),
-                        Color(0xFF0C0F1D),
-                        Color(0xFF13172B)
-                    )
+                Brush.verticalGradient(
+                    colors = listOf(ScreenBlack, ScreenBlackSoft, ScreenBlack)
                 )
             )
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = 28.dp, vertical = 18.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            TopStrip(page = page)
-            Spacer(Modifier.height(18.dp))
-            if (isWide) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp)
-                ) {
-                    SidebarRail(
-                        modifier = Modifier.width(212.dp),
-                        highlightCalibration = page == DeckPage.CALIBRATION
-                    )
-                    Box(modifier = Modifier.weight(1.15f)) { content() }
-                    Box(modifier = Modifier.weight(0.95f)) { preview() }
-                }
-            } else {
+            TopBar()
+            Spacer(Modifier.height(20.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.TopCenter
+            ) {
                 Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    SidebarRailCompact(highlightCalibration = page == DeckPage.CALIBRATION)
-                    Box(modifier = Modifier.fillMaxWidth()) { content() }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f, fill = false)
-                    ) { preview() }
-                }
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 860.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    content = content
+                )
             }
-            Spacer(Modifier.height(16.dp))
-            BottomDock(uiState = uiState)
         }
     }
 }
 
 @Composable
-private fun TopStrip(page: DeckPage) {
+private fun TopBar() {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TinyIndicator(active = false)
-            TinyIndicator(active = page == DeckPage.CALIBRATION)
-        }
+        Text(
+            text = "Clock & Weather",
+            style = MaterialTheme.typography.titleMedium,
+            color = TextMuted
+        )
         Spacer(Modifier.weight(1f))
         Text(
             text = rememberUiClockText(),
-            style = MaterialTheme.typography.titleLarge,
-            color = Color(0xFFF2F4FF),
-            fontWeight = FontWeight.SemiBold
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary,
+            fontWeight = FontWeight.Medium
         )
-        Spacer(Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TinyGlyph(label = "BT")
-            TinyGlyph(label = "GPS")
-            TinyGlyph(label = "WiFi")
-        }
-    }
-}
-
-@Composable
-private fun TinyIndicator(active: Boolean) {
-    Box(
-        modifier = Modifier
-            .size(20.dp, 14.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(if (active) Color(0xFFFA6376) else Color(0xFF2A2F4A))
-    )
-}
-
-@Composable
-private fun TinyGlyph(label: String) {
-    Text(
-        text = label,
-        color = Color(0xFFA9B2D6),
-        style = MaterialTheme.typography.labelSmall,
-        fontWeight = FontWeight.Medium
-    )
-}
-
-@Composable
-private fun SidebarRail(modifier: Modifier = Modifier, highlightCalibration: Boolean) {
-    Surface(
-        modifier = modifier.fillMaxHeight(),
-        shape = RoundedCornerShape(28.dp),
-        color = Color(0x0FEEF1FF),
-        tonalElevation = 0.dp
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(vertical = 20.dp, horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            RailItem("Vehicle", selected = false)
-            RailItem("Energy", selected = false)
-            RailItem("Drive", selected = false)
-            RailItem("Display", selected = true)
-            RailItem("Sound", selected = false)
-            RailItem("Connect", selected = false)
-            RailItem("Calibrate", selected = highlightCalibration)
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = "Clock & Weather",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFFAAB4D8)
-            )
-        }
-    }
-}
-
-@Composable
-private fun SidebarRailCompact(highlightCalibration: Boolean) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        RailChip("Vehicle", false)
-        RailChip("Energy", false)
-        RailChip("Drive", false)
-        RailChip("Display", true)
-        RailChip("Calibrate", highlightCalibration)
-    }
-}
-
-@Composable
-private fun RailChip(label: String, selected: Boolean) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = if (selected) Color(0xFFE0E4FF) else Color(0x141B2034)
-    ) {
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            color = if (selected) Color(0xFF0C1022) else Color(0xFFC1CAE8),
-            style = MaterialTheme.typography.labelLarge
-        )
-    }
-}
-
-@Composable
-private fun RailItem(label: String, selected: Boolean) {
-    Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = if (selected) Color(0xFFE3E6FF) else Color(0x00FFFFFF),
-        border = if (!selected) null else null
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(18.dp)
-                    .clip(CircleShape)
-                    .background(if (selected) Color(0xFF7B87C7) else Color(0xFF2F3553))
-            )
-            Text(
-                text = label,
-                color = if (selected) Color(0xFF101428) else Color(0xFFDAE0F7),
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
     }
 }
 
@@ -419,7 +264,6 @@ private fun MainControlScreen(
     onWeatherToggle: (Boolean) -> Unit,
     onInternetWeatherToggle: (Boolean) -> Unit,
     onCalibrate: () -> Unit,
-    onRefresh: () -> Unit,
     onCheckForUpdate: () -> Unit,
     onInstallUpdate: () -> Unit,
     onOpenInstallSettings: () -> Unit,
@@ -427,140 +271,134 @@ private fun MainControlScreen(
     onReEnableAutoStart: () -> Unit,
     onResetProtection: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ScreenIntro(
+        title = "Overlay Control",
+        subtitle = "Basic controls for the secondary-display clock and external temperature overlay."
+    )
+
+    SectionPanel(
+        title = "Overlay",
+        subtitle = "Only the pieces you want to render."
     ) {
-        HeaderPanel(
-            title = "Display Settings",
-            subtitle = "Single-purpose clock and weather overlay for HDMI 2"
+        SettingRow(
+            label = "Clock",
+            detail = "Show the clock on the overlay.",
+            checked = uiState.settings.overlay.clockEnabled,
+            onToggle = onClockToggle
         )
-        GlassPanel(title = "Clock Overlay", subtitle = "Keep the main clock visible on the secondary display.") {
-            BinaryModeRow(
-                label = "Clock",
-                checked = uiState.settings.overlay.clockEnabled,
-                onCheckedChange = onClockToggle
+        SettingRow(
+            label = "Weather",
+            detail = "Show outside temperature on the overlay.",
+            checked = uiState.settings.overlay.weatherEnabled,
+            onToggle = onWeatherToggle
+        )
+        if (uiState.settings.overlay.weatherEnabled) {
+            SettingRow(
+                label = "Internet Weather",
+                detail = "Use online weather when reachable, otherwise fall back to the car temperature.",
+                checked = uiState.settings.overlay.internetWeatherEnabled,
+                onToggle = onInternetWeatherToggle
             )
         }
-        GlassPanel(
-            title = "Weather Overlay",
-            subtitle = uiState.runtime.weatherStatus
-        ) {
-            BinaryModeRow(
-                label = "Weather",
-                checked = uiState.settings.overlay.weatherEnabled,
-                onCheckedChange = onWeatherToggle
-            )
-            if (uiState.settings.overlay.weatherEnabled) {
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Internet weather",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "When disabled, weather uses the car API temperature only. When enabled and online, internet forecast is used and falls back automatically.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFB8C1E5)
-                        )
-                    }
-                    Switch(
-                        checked = uiState.settings.overlay.internetWeatherEnabled,
-                        onCheckedChange = onInternetWeatherToggle
-                    )
-                }
-                Spacer(Modifier.height(6.dp))
-                StatusLine(
-                    "Source",
-                    uiState.runtime.weatherState?.sourceLabel ?: if (uiState.settings.overlay.internetWeatherEnabled) "Internet when online" else "Vehicle API"
-                )
-            }
-            if (!uiState.runtime.lastError.isNullOrBlank()) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = uiState.runtime.lastError.orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFFF9AA7)
-                )
-            }
-        }
-        GlassPanel(title = "Actions", subtitle = "Calibration, updates, and runtime refresh.") {
-            WrapRow {
-                ActionButton("Calibrate", onCalibrate)
-                ActionButton("Refresh", onRefresh)
-                ActionButton("Check for Update", onCheckForUpdate)
-            }
-            if (uiState.update.updateAvailable) {
-                Spacer(Modifier.height(12.dp))
-                WrapRow {
-                    if (permissions.installPermissionGranted) {
-                        ActionButton(
-                            label = "Install ${uiState.update.latestVersionName ?: "Update"}",
-                            onClick = onInstallUpdate,
-                            primary = true,
-                            enabled = !uiState.update.isInstalling
-                        )
-                    } else {
-                        ActionButton("Allow Install", onOpenInstallSettings)
-                    }
-                }
-            }
-        }
-        GlassPanel(title = "Status", subtitle = "Startup safety, display route, and permissions.") {
-            StatusLine("Display", if (uiState.runtime.overlayAttached) {
-                uiState.runtime.overlayDisplayName ?: "Attached"
+    }
+
+    SectionPanel(
+        title = "System",
+        subtitle = "Live status and boot protection."
+    ) {
+        StatusLine(
+            label = "Display",
+            value = if (uiState.runtime.overlayAttached) {
+                uiState.runtime.overlayDisplayName ?: "Secondary display attached"
             } else {
-                "Waiting for HDMI 2"
-            })
-            StatusLine("Startup", startupLabel(uiState))
-            StatusLine("Update", uiState.update.statusMessage)
-            Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                StatusPill("Location", permissions.locationGranted)
-                StatusPill("Background", permissions.backgroundLocationGranted)
-                StatusPill("Notify", permissions.notificationGranted)
-                StatusPill("Battery", permissions.batteryOptimizedIgnored)
+                "Waiting for secondary display"
             }
-            Spacer(Modifier.height(14.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Start on boot",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = Color.White
-                    )
-                    Text(
-                        text = "Protected by the failure detector after repeated bad launches.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFB8C1E5)
-                    )
+        )
+        SettingRow(
+            label = "Start On Boot",
+            detail = "Protected by the failure detector after repeated unhealthy launches.",
+            checked = uiState.settings.service.autoStartOnBoot,
+            onToggle = onAutoStartToggle
+        )
+        StatusLine(
+            label = "Autostart",
+            value = startupLabel(uiState)
+        )
+        if (uiState.settings.overlay.weatherEnabled) {
+            StatusLine(
+                label = "Source",
+                value = uiState.runtime.weatherState?.sourceLabel ?: if (uiState.settings.overlay.internetWeatherEnabled) {
+                    "Car fallback"
+                } else {
+                    "Vehicle API"
                 }
-                Switch(
-                    checked = uiState.settings.service.autoStartOnBoot,
-                    onCheckedChange = onAutoStartToggle
+            )
+            StatusLine(
+                label = "External Temp",
+                value = uiState.runtime.weatherState?.outsideTemperatureC?.let { formatTemperature(it) } ?: "--"
+            )
+            StatusLine(
+                label = "Weather Status",
+                value = uiState.runtime.weatherStatus
+            )
+        }
+        if (uiState.startupProtection.autoStartBlocked) {
+            Spacer(Modifier.height(4.dp))
+            ButtonStrip(
+                primaryLabel = "Re-enable Autostart",
+                onPrimaryClick = onReEnableAutoStart,
+                secondaryLabel = "Reset Counter",
+                onSecondaryClick = onResetProtection
+            )
+        }
+        if (!uiState.runtime.lastError.isNullOrBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = uiState.runtime.lastError.orEmpty(),
+                color = ErrorTint,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+
+    SectionPanel(
+        title = "Tools",
+        subtitle = "Calibration and update controls."
+    ) {
+        FullWidthActionButton(
+            label = "Calibrate",
+            onClick = onCalibrate,
+            primary = false
+        )
+        Spacer(Modifier.height(10.dp))
+        if (uiState.update.updateAvailable) {
+            if (permissions.installPermissionGranted) {
+                ButtonStrip(
+                    primaryLabel = "Install ${uiState.update.latestVersionName ?: "Update"}",
+                    onPrimaryClick = onInstallUpdate,
+                    primaryEnabled = !uiState.update.isInstalling,
+                    secondaryLabel = "Check For Update",
+                    onSecondaryClick = onCheckForUpdate
+                )
+            } else {
+                ButtonStrip(
+                    primaryLabel = "Allow Install",
+                    onPrimaryClick = onOpenInstallSettings,
+                    secondaryLabel = "Check For Update",
+                    onSecondaryClick = onCheckForUpdate
                 )
             }
-            if (uiState.startupProtection.autoStartBlocked) {
-                Spacer(Modifier.height(12.dp))
-                WrapRow {
-                    ActionButton("Re-enable Autostart", onReEnableAutoStart)
-                    ActionButton("Reset Counter", onResetProtection)
-                }
-            }
+        } else {
+            FullWidthActionButton(
+                label = "Check For Update",
+                onClick = onCheckForUpdate
+            )
         }
+        Spacer(Modifier.height(10.dp))
+        StatusLine(
+            label = "Updater",
+            value = uiState.update.statusMessage
+        )
     }
 }
 
@@ -577,122 +415,142 @@ private fun CalibrationScreen(
     DisposableEffect(Unit) {
         onDispose { onDone() }
     }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+
+    ScreenIntro(
+        title = "Calibration",
+        subtitle = "Adjust X and Y offsets for the clock and temperature overlay."
+    )
+
+    SectionPanel(
+        title = "Calibration Actions",
+        subtitle = "This page stays out of the way until you open it from the main screen."
     ) {
-        HeaderPanel(
-            title = "Overlay Calibration",
-            subtitle = "Fine-tune the clock and weather positions with +100, +10, +1, and negative steps."
+        ButtonStrip(
+            primaryLabel = "Done",
+            onPrimaryClick = onDone,
+            secondaryLabel = "Reset Position",
+            onSecondaryClick = onReset
         )
-        GlassPanel(title = "Calibration Controls", subtitle = "Use the hidden page to match the screen overlay.") {
-            WrapRow {
-                ActionButton("Done", onDone, primary = true)
-                ActionButton("Reset Position", onReset)
-            }
-        }
-        PreviewPanel(
-            settings = previewOverlaySettings(uiState.settings.overlay.copy(calibrationMode = true)),
-            uiState = uiState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(280.dp)
-        )
-        AxisControlCard("Clock X", uiState.settings.overlay.clockOffsetXDp, onAdjustClockX)
-        AxisControlCard("Clock Y", uiState.settings.overlay.clockOffsetYDp, onAdjustClockY)
-        AxisControlCard("Weather X", uiState.settings.overlay.weatherOffsetXDp, onAdjustWeatherX)
-        AxisControlCard("Weather Y", uiState.settings.overlay.weatherOffsetYDp, onAdjustWeatherY)
     }
+
+    AxisControlCard("Clock X", uiState.settings.overlay.clockOffsetXDp, onAdjustClockX)
+    AxisControlCard("Clock Y", uiState.settings.overlay.clockOffsetYDp, onAdjustClockY)
+    AxisControlCard("Weather X", uiState.settings.overlay.weatherOffsetXDp, onAdjustWeatherX)
+    AxisControlCard("Weather Y", uiState.settings.overlay.weatherOffsetYDp, onAdjustWeatherY)
 }
 
 @Composable
-private fun HeaderPanel(title: String, subtitle: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun ScreenIntro(title: String, subtitle: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
             text = title,
             style = MaterialTheme.typography.displaySmall,
-            color = Color.White,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            color = TextPrimary
+        )
+        Box(
+            modifier = Modifier
+                .width(74.dp)
+                .height(3.dp)
+                .background(AccentTeal, RoundedCornerShape(99.dp))
         )
         Text(
             text = subtitle,
             style = MaterialTheme.typography.bodyLarge,
-            color = Color(0xFFB8C1E5)
+            color = TextMuted
         )
     }
 }
 
 @Composable
-private fun GlassPanel(
+private fun SectionPanel(
     title: String,
     subtitle: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(28.dp),
-        color = Color(0x1BF2F4FF),
-        tonalElevation = 0.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = PanelBlack,
+        border = BorderStroke(1.dp, BorderGray)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            content = {
+                .padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleLarge,
-                    color = Color.White
+                    color = TextPrimary
                 )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFFB5BEDF)
+                    color = TextMuted
                 )
-                content()
             }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SettingRow(
+    label: String,
+    detail: String,
+    checked: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary
+            )
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMuted
+            )
+        }
+        Spacer(Modifier.width(18.dp))
+        SegmentSelector(
+            checked = checked,
+            onCheckedChange = onToggle
         )
     }
 }
 
 @Composable
-private fun BinaryModeRow(
-    label: String,
+private fun SegmentSelector(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleMedium,
-            color = Color(0xFFECEFFF)
-        )
-        Surface(
-            shape = RoundedCornerShape(18.dp),
-            color = Color(0x10191F33),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3A4464))
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(0.dp)
-            ) {
-                SegmentButton(
-                    label = "OFF",
-                    selected = !checked,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onCheckedChange(false) }
-                )
-                SegmentButton(
-                    label = "ON",
-                    selected = checked,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onCheckedChange(true) }
-                )
-            }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = ScreenBlack,
+        border = BorderStroke(1.dp, BorderGray)
+    ) {
+        Row {
+            SegmentButton(
+                label = "OFF",
+                selected = !checked,
+                onClick = { onCheckedChange(false) }
+            )
+            SegmentButton(
+                label = "ON",
+                selected = checked,
+                onClick = { onCheckedChange(true) }
+            )
         }
     }
 }
@@ -701,33 +559,69 @@ private fun BinaryModeRow(
 private fun SegmentButton(
     label: String,
     selected: Boolean,
-    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (selected) Color(0xFFE4E7FF) else Color.Transparent)
+        modifier = Modifier
+            .width(118.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(if (selected) ActiveTile else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(vertical = 16.dp),
+            .padding(vertical = 13.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
-            color = if (selected) Color(0xFF0D1124) else Color(0xFFCFD6F4),
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.Medium,
+            color = if (selected) ActiveText else TextMuted
         )
     }
 }
 
 @Composable
-private fun WrapRow(content: @Composable RowScope.() -> Unit) {
+private fun ButtonStrip(
+    primaryLabel: String,
+    onPrimaryClick: () -> Unit,
+    secondaryLabel: String,
+    onSecondaryClick: () -> Unit,
+    primaryEnabled: Boolean = true,
+    secondaryEnabled: Boolean = true
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        content = content
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        ActionButton(
+            label = primaryLabel,
+            onClick = onPrimaryClick,
+            primary = true,
+            enabled = primaryEnabled,
+            modifier = Modifier.weight(1f)
+        )
+        ActionButton(
+            label = secondaryLabel,
+            onClick = onSecondaryClick,
+            primary = false,
+            enabled = secondaryEnabled,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun FullWidthActionButton(
+    label: String,
+    onClick: () -> Unit,
+    primary: Boolean = false,
+    enabled: Boolean = true
+) {
+    ActionButton(
+        label = label,
+        onClick = onClick,
+        primary = primary,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth()
     )
 }
 
@@ -735,29 +629,38 @@ private fun WrapRow(content: @Composable RowScope.() -> Unit) {
 private fun ActionButton(
     label: String,
     onClick: () -> Unit,
-    primary: Boolean = false,
-    enabled: Boolean = true
+    primary: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
 ) {
-    val colors = if (primary) {
-        ButtonDefaults.buttonColors(
-            containerColor = Color(0xFFE4E7FF),
-            contentColor = Color(0xFF0C1022),
-            disabledContainerColor = Color(0xFF7C83A5),
-            disabledContentColor = Color(0xFF1A1F36)
-        )
-    } else {
-        ButtonDefaults.outlinedButtonColors(
-            contentColor = Color(0xFFE4E7FF),
-            disabledContentColor = Color(0xFF7C83A5)
-        )
-    }
     if (primary) {
-        Button(onClick = onClick, enabled = enabled, colors = colors, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)) {
-            Text(label)
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = modifier,
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = ActiveTile,
+                contentColor = ActiveText,
+                disabledContainerColor = Color(0xFF777777),
+                disabledContentColor = Color(0xFF222222)
+            )
+        ) {
+            Text(text = label, style = MaterialTheme.typography.titleMedium)
         }
     } else {
-        OutlinedButton(onClick = onClick, enabled = enabled, colors = colors, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)) {
-            Text(label)
+        OutlinedButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = modifier,
+            shape = RoundedCornerShape(8.dp),
+            border = BorderStroke(1.dp, BorderGray),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = TextPrimary,
+                disabledContentColor = TextMuted
+            )
+        ) {
+            Text(text = label, style = MaterialTheme.typography.titleMedium)
         }
     }
 }
@@ -772,98 +675,25 @@ private fun StatusLine(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
-            color = Color(0xFFB5BEDF)
+            color = TextMuted
         )
+        Spacer(Modifier.width(20.dp))
         Text(
             text = value,
             style = MaterialTheme.typography.bodyLarge,
-            color = Color.White,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            color = TextPrimary,
             textAlign = TextAlign.End
         )
     }
 }
 
 @Composable
-private fun StatusPill(label: String, granted: Boolean) {
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = if (granted) Color(0xFF6FE2D6) else Color(0xFF2B324D)
-    ) {
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.labelLarge,
-            color = if (granted) Color(0xFF08131C) else Color(0xFFE6EAFF)
-        )
-    }
-}
-
-@Composable
-private fun PreviewPanel(
-    settings: OverlaySettings,
-    uiState: AppUiState,
-    modifier: Modifier = Modifier
+private fun AxisControlCard(
+    title: String,
+    value: Int,
+    onAdjust: (Int) -> Unit
 ) {
-    GlassPanel(
-        title = "HDMI 2 Preview",
-        subtitle = uiState.runtime.overlayDisplayName ?: "Secondary display preview"
-    ) {
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(360.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            Color(0xFF171B33),
-                            Color(0xFF1E2442),
-                            Color(0xFF0E1122)
-                        )
-                    )
-                )
-                .border(1.dp, Color(0xFF3B4468), RoundedCornerShape(24.dp))
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(Color(0x223AE9FF), Color.Transparent)
-                        )
-                    )
-            )
-            if (settings.shouldRenderAnything()) {
-                OverlayPreviewCanvas(
-                    settings = settings,
-                    weatherState = uiState.runtime.weatherState,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Text(
-                    text = "Turn on Clock or Weather to arm the overlay.",
-                    modifier = Modifier.align(Alignment.Center),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = Color(0xFFBAC4E7)
-                )
-            }
-            Text(
-                text = if (uiState.runtime.overlayAttached) "LIVE" else "STANDBY",
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp),
-                style = MaterialTheme.typography.labelLarge,
-                color = if (uiState.runtime.overlayAttached) Color(0xFF70F0DB) else Color(0xFFC5CEE9)
-            )
-        }
-    }
-}
-
-@Composable
-private fun AxisControlCard(title: String, value: Int, onAdjust: (Int) -> Unit) {
-    GlassPanel(
+    SectionPanel(
         title = title,
         subtitle = "Current offset: $value"
     ) {
@@ -882,58 +712,24 @@ private fun AxisControlCard(title: String, value: Int, onAdjust: (Int) -> Unit) 
 }
 
 @Composable
-private fun CalibrationButton(label: String, onClick: () -> Unit) {
+private fun CalibrationButton(
+    label: String,
+    onClick: () -> Unit
+) {
     Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = Color(0x111F2440),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF394261)),
+        shape = RoundedCornerShape(8.dp),
+        color = ScreenBlack,
+        border = BorderStroke(1.dp, BorderGray),
         modifier = Modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
     ) {
         Text(
             text = label,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             style = MaterialTheme.typography.labelLarge,
-            color = Color.White
+            color = TextPrimary
         )
-    }
-}
-
-@Composable
-private fun BottomDock(uiState: AppUiState) {
-    Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = Color(0x101A2035),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = if (uiState.runtime.weatherState?.outsideTemperatureC != null) {
-                    "${uiState.runtime.weatherState.outsideTemperatureC.toInt()}°"
-                } else {
-                    "--°"
-                },
-                style = MaterialTheme.typography.titleLarge,
-                color = Color.White
-            )
-            Text(
-                text = if (uiState.runtime.overlayAttached) "Overlay live" else "Overlay standby",
-                style = MaterialTheme.typography.bodyLarge,
-                color = Color(0xFFBAC4E7)
-            )
-            Text(
-                text = uiState.update.latestVersionName?.let { "Feed $it" } ?: "No feed",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF9FA9CD)
-            )
-        }
     }
 }
 
@@ -957,10 +753,6 @@ private fun rememberUiClockText(): String {
 @Composable
 private fun rememberPermissionSnapshot(context: Context): PermissionSnapshot {
     return PermissionSnapshot(
-        locationGranted = hasForegroundLocationPermission(context),
-        backgroundLocationGranted = hasBackgroundLocationPermission(context),
-        notificationGranted = hasNotificationPermission(context),
-        batteryOptimizedIgnored = isIgnoringBatteryOptimizations(context),
         installPermissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
     )
 }
@@ -974,15 +766,9 @@ private fun startupLabel(uiState: AppUiState): String {
     }
 }
 
-private fun previewOverlaySettings(settings: OverlaySettings): OverlaySettings {
-    return settings.copy(
-        clockOffsetXDp = (settings.clockOffsetXDp / 10).coerceIn(-140, 140),
-        clockOffsetYDp = (settings.clockOffsetYDp / 10).coerceIn(-90, 90),
-        weatherOffsetXDp = (settings.weatherOffsetXDp / 10).coerceIn(-140, 140),
-        weatherOffsetYDp = (settings.weatherOffsetYDp / 10).coerceIn(-90, 90),
-        clockFontSizeSp = 28,
-        weatherFontSizeSp = 16
-    )
+private fun formatTemperature(value: Float): String {
+    val rounded = if (value % 1f == 0f) value.toInt().toString() else String.format(Locale.US, "%.1f", value)
+    return "$rounded°C"
 }
 
 private fun hasForegroundLocationPermission(context: Context): Boolean {

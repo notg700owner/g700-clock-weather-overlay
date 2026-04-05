@@ -16,26 +16,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.State
-import androidx.compose.runtime.produceState
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color as ComposeColor
-import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.g700.clockweather.models.OverlaySettings
-import kotlinx.coroutines.delay
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -158,68 +139,6 @@ class HdmiOverlayPresentation(
     private fun dpToPx(dp: Int): Int {
         return (dp * context.resources.displayMetrics.density).toInt()
     }
-}
-
-@Composable
-fun OverlayPreviewCanvas(
-    settings: OverlaySettings,
-    weatherState: OverlayWeatherState?,
-    modifier: Modifier = Modifier
-) {
-    Surface(color = ComposeColor.Transparent, modifier = modifier) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            if (settings.clockEnabled || settings.calibrationMode) {
-                Text(
-                    text = rememberClockText().value,
-                    color = ComposeColor.White,
-                    fontSize = settings.clockFontSizeSp.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                    style = overlayTextStyle(22f),
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .offset(x = settings.clockOffsetXDp.dp, y = settings.clockOffsetYDp.dp)
-                )
-            }
-
-            val weatherLine = weatherLabel(settings, weatherState)
-            if ((settings.weatherEnabled || settings.calibrationMode) && !weatherLine.isNullOrBlank()) {
-                Text(
-                    text = weatherLine,
-                    color = ComposeColor.White.copy(alpha = 0.92f),
-                    fontSize = settings.weatherFontSizeSp.sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
-                    style = overlayTextStyle(18f),
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .offset(x = settings.weatherOffsetXDp.dp, y = settings.weatherOffsetYDp.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun rememberClockText(): State<String> {
-    val context = LocalContext.current
-    return produceState(initialValue = formatClockText(context, System.currentTimeMillis())) {
-        while (true) {
-            val now = System.currentTimeMillis()
-            value = formatClockText(context, now)
-            val nextMinuteDelay = 60_000L - (now % 60_000L)
-            delay(nextMinuteDelay.coerceAtLeast(1_000L))
-        }
-    }
-}
-
-private fun overlayTextStyle(blurRadius: Float): TextStyle {
-    return TextStyle(
-        shadow = Shadow(
-            color = ComposeColor.Black.copy(alpha = 0.55f),
-            blurRadius = blurRadius
-        )
-    )
 }
 
 private fun formatClockText(context: Context, now: Long): String {

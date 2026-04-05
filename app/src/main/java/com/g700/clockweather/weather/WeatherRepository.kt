@@ -5,8 +5,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
 import android.location.LocationManager
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import androidx.core.content.ContextCompat
 import com.g700.clockweather.overlay.OverlayWeatherState
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +12,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
 
 data class WeatherFetchResult(
@@ -40,20 +40,21 @@ class WeatherRepository(private val context: Context) {
 
     suspend fun refresh(preferInternetWeather: Boolean): WeatherFetchResult = withContext(Dispatchers.IO) {
         val vehicleWeather = vehicleTemperatureSource.latestResult()
+        val vehicleFailure = vehicleTemperatureSource.diagnosticMessage
 
         if (!preferInternetWeather) {
             return@withContext vehicleWeather ?: WeatherFetchResult(
                 status = "Vehicle temperature is unavailable.",
-                errorMessage = "The car did not return an exterior temperature value."
+                errorMessage = vehicleFailure ?: "The car did not return an exterior temperature value."
             )
         }
 
-        if (!isInternetConnected()) {
+        if (!hasWorkingInternet()) {
             return@withContext vehicleWeather?.copy(
                 status = "No internet connection. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "No internet connection.",
-                errorMessage = "Internet weather is enabled, but no network is connected and the vehicle temperature is unavailable."
+                errorMessage = vehicleFailure ?: "Internet weather is enabled, but no network is connected and the vehicle temperature is unavailable."
             )
         }
 
@@ -62,7 +63,7 @@ class WeatherRepository(private val context: Context) {
                 status = "Location permission missing. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "Location permission is required for internet weather.",
-                errorMessage = "Grant location access to fetch internet weather."
+                errorMessage = vehicleFailure ?: "Grant location access to fetch internet weather."
             )
         }
 
@@ -72,7 +73,7 @@ class WeatherRepository(private val context: Context) {
                 status = "Waiting for a GPS fix. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "Waiting for a GPS fix.",
-                errorMessage = "No cached location is available yet."
+                errorMessage = vehicleFailure ?: "No cached location is available yet."
             )
         }
 
@@ -83,7 +84,7 @@ class WeatherRepository(private val context: Context) {
                 status = "Internet weather failed. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "Internet weather failed.",
-                errorMessage = error.message ?: error.javaClass.simpleName
+                errorMessage = vehicleFailure ?: error.message ?: error.javaClass.simpleName
             )
         }
     }
@@ -120,12 +121,13 @@ class WeatherRepository(private val context: Context) {
         )
     }
 
-    private fun isInternetConnected(): Boolean {
-        val connectivityManager = context.getSystemService(ConnectivityManager::class.java) ?: return false
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    private fun hasWorkingInternet(): Boolean {
+        return runCatching {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("api.open-meteo.com", 443), 1_500)
+            }
+            true
+        }.getOrDefault(false)
     }
 
     private fun hasAnyLocationPermission(): Boolean {

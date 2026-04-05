@@ -50,14 +50,6 @@ class AppRepository(private val context: Context) {
         checkForUpdates(silent = true)
     }
 
-    fun refresh() {
-        if (uiState.value.settings.service.enabled) {
-            OverlayServiceController.start(context, reason = "refresh")
-            OverlayServiceController.refreshSettings(context)
-        }
-        checkForUpdates(silent = true)
-    }
-
     private fun saveSettings(settings: AppSettings) {
         val current = SettingsStore.load(context).normalized()
         val next = settings.normalized()

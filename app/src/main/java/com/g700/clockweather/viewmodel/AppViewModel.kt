@@ -12,7 +12,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         repository.start()
     }
 
-    fun refresh() = repository.refresh()
     fun setClockEnabled(enabled: Boolean) = repository.setClockEnabled(enabled)
     fun setOverlayWeatherEnabled(enabled: Boolean) = repository.setOverlayWeatherEnabled(enabled)
     fun setInternetWeatherEnabled(enabled: Boolean) = repository.setInternetWeatherEnabled(enabled)

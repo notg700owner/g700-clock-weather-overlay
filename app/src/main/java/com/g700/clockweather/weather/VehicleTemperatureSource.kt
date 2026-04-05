@@ -18,6 +18,8 @@ private const val VEHICLE_SOURCE_LABEL = "Vehicle API"
 internal class VehicleTemperatureSource(private val context: Context) {
     private val mutableUpdates = MutableStateFlow<WeatherFetchResult?>(null)
     val updates: StateFlow<WeatherFetchResult?> = mutableUpdates.asStateFlow()
+    var diagnosticMessage: String? = null
+        private set
 
     @Volatile
     private var binding: TemperatureBinding? = null
@@ -28,7 +30,15 @@ internal class VehicleTemperatureSource(private val context: Context) {
     fun start() {
         val activeBinding = ensureBinding() ?: return
         if (mutableUpdates.value == null) {
-            activeBinding.readCurrentTemperature()?.let { publishTemperature(it, fromCallback = false) }
+            val read = activeBinding.readCurrentTemperature()
+            if (read.value != null) {
+                publishTemperature(read.value, fromCallback = false)
+            } else {
+                recordDiagnostic(
+                    read.errorMessage
+                        ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C() returned no value."
+                )
+            }
         }
     }
 
@@ -42,19 +52,29 @@ internal class VehicleTemperatureSource(private val context: Context) {
     fun latestResult(): WeatherFetchResult? {
         mutableUpdates.value?.let { return it }
         val activeBinding = ensureBinding() ?: return null
-        val value = activeBinding.readCurrentTemperature() ?: return mutableUpdates.value
-        return publishTemperature(value, fromCallback = false)
+        val read = activeBinding.readCurrentTemperature()
+        if (read.value == null) {
+            recordDiagnostic(
+                read.errorMessage
+                    ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C() returned no value."
+            )
+            return mutableUpdates.value
+        }
+        return publishTemperature(read.value, fromCallback = false)
     }
 
     private fun ensureBinding(): TemperatureBinding? = synchronized(this) {
         binding?.let { return it }
         val discovered = discoverBinding() ?: return null
         binding = discovered
+        diagnosticMessage = null
         return discovered
     }
 
     private fun discoverBinding(): TemperatureBinding? {
+        val attemptedTypes = linkedSetOf<String>()
         for (candidate in discoverCandidates()) {
+            attemptedTypes += candidate.instance.javaClass.name
             val getter = findExternalTemperatureGetter(candidate.instance.javaClass) ?: continue
             val callbackRegistration = registerCallbackIfPossible(candidate.instance)
             AppLogger.log(
@@ -69,6 +89,14 @@ internal class VehicleTemperatureSource(private val context: Context) {
                 releaseAction = candidate.releaseAction
             )
         }
+        val attemptedSummary = attemptedTypes.take(4).joinToString()
+        recordDiagnostic(
+            if (attemptedSummary.isBlank()) {
+                "No compatible car manager exposing getEXTERNALTEMPERATURE_C() was found."
+            } else {
+                "No compatible car manager exposing getEXTERNALTEMPERATURE_C() was found. Checked: $attemptedSummary"
+            }
+        )
         return null
     }
 
@@ -81,30 +109,44 @@ internal class VehicleTemperatureSource(private val context: Context) {
             candidates.putIfAbsent(key, ManagerCandidate(instance, releaseAction))
         }
 
-        addCandidate(runCatching { context.getSystemService("car") }.getOrNull())
+        listOf(
+            "car",
+            "vehicle",
+            "car_service",
+            "vehicle_service",
+            "car_manager",
+            "vehicle_manager"
+        ).forEach { serviceName ->
+            addCandidate(runCatching { context.getSystemService(serviceName) }.getOrNull())
+        }
+
+        discoverContextServiceFields(::addCandidate)
 
         val carClass = runCatching { Class.forName("android.car.Car") }.getOrNull()
         val carInstance = createCarInstance(carClass)
         val carReleaseAction = carInstance?.let(::buildReleaseAction)
 
         addCandidate(carInstance, carReleaseAction)
+        discoverNestedManagers(context, null, ::addCandidate)
+        discoverNestedManagers(context.applicationContext, null, ::addCandidate)
 
         if (carClass != null && carInstance != null) {
-            val getCarManager = carClass.methods.firstOrNull { method ->
+            val getCarManager = allMethods(carClass).firstOrNull { method ->
                 method.name == "getCarManager" &&
                     method.parameterCount == 1 &&
                     method.parameterTypes[0] == String::class.java
             }
 
-            carClass.fields
+            allFields(carClass)
                 .filter { Modifier.isStatic(it.modifiers) && it.type == String::class.java && it.name.contains("SERVICE") }
                 .forEach { field ->
                     val serviceName = runCatching { field.get(null) as? String }.getOrNull() ?: return@forEach
                     val manager = runCatching { getCarManager?.invoke(carInstance, serviceName) }.getOrNull()
                     addCandidate(manager, carReleaseAction)
+                    discoverNestedManagers(manager, carReleaseAction, ::addCandidate)
                 }
 
-            carInstance.javaClass.methods
+            allMethods(carInstance.javaClass)
                 .filter { method ->
                     method.parameterCount == 0 &&
                         method.name.startsWith("get") &&
@@ -114,25 +156,59 @@ internal class VehicleTemperatureSource(private val context: Context) {
                 .forEach { method ->
                     val manager = runCatching { method.invoke(carInstance) }.getOrNull()
                     addCandidate(manager, carReleaseAction)
+                    discoverNestedManagers(manager, carReleaseAction, ::addCandidate)
+                }
+
+            allFields(carInstance.javaClass)
+                .filter { !Modifier.isStatic(it.modifiers) && mayExposeExternalTemperature(it.type) }
+                .forEach { field ->
+                    val manager = runCatching { field.get(carInstance) }.getOrNull()
+                    addCandidate(manager, carReleaseAction)
+                    discoverNestedManagers(manager, carReleaseAction, ::addCandidate)
                 }
         }
 
         return candidates.values.toList()
     }
 
+    private fun discoverContextServiceFields(addCandidate: (Any?, (() -> Unit)?) -> Unit) {
+        allFields(Context::class.java)
+            .filter { field ->
+                Modifier.isStatic(field.modifiers) &&
+                    field.type == String::class.java &&
+                    field.name.endsWith("_SERVICE")
+            }
+            .mapNotNull { field -> runCatching { field.get(null) as? String }.getOrNull() }
+            .distinct()
+            .forEach { serviceName ->
+                val service = runCatching { context.getSystemService(serviceName) }.getOrNull() ?: return@forEach
+                val serviceNameMatches = serviceName.contains("car", ignoreCase = true) ||
+                    serviceName.contains("vehicle", ignoreCase = true)
+                if (serviceNameMatches || mayExposeExternalTemperature(service.javaClass)) {
+                    addCandidate(service, null)
+                    discoverNestedManagers(service, null, addCandidate)
+                }
+            }
+    }
+
     private fun createCarInstance(carClass: Class<*>?): Any? {
         carClass ?: return null
-        val createCar = carClass.methods.firstOrNull { method ->
+        val createCar = allMethods(carClass).firstOrNull { method ->
             Modifier.isStatic(method.modifiers) &&
                 method.name == "createCar" &&
-                method.parameterCount == 1 &&
-                method.parameterTypes[0] == Context::class.java
+                method.parameterTypes.firstOrNull() == Context::class.java
         } ?: return null
-        return runCatching { createCar.invoke(null, context) }.getOrNull()
+        val args = Array(createCar.parameterCount) { index ->
+            when (createCar.parameterTypes[index]) {
+                Context::class.java -> context
+                else -> defaultParameterValue(createCar.parameterTypes[index])
+            }
+        }
+        return runCatching { createCar.invoke(null, *args) }.getOrNull()
     }
 
     private fun buildReleaseAction(owner: Any): (() -> Unit)? {
-        val method = owner.javaClass.methods.firstOrNull { candidate ->
+        val method = allMethods(owner.javaClass).firstOrNull { candidate ->
             candidate.parameterCount == 0 && (
                 candidate.name == "disconnect" ||
                     candidate.name == "disconnectFromCarService" ||
@@ -143,21 +219,23 @@ internal class VehicleTemperatureSource(private val context: Context) {
     }
 
     private fun mayExposeExternalTemperature(type: Class<*>): Boolean {
-        return type.simpleName.contains("Manager", ignoreCase = true) || findExternalTemperatureGetter(type) != null
+        return type.simpleName.contains("Manager", ignoreCase = true) ||
+            type.simpleName.contains("Vehicle", ignoreCase = true) ||
+            type.simpleName.contains("Car", ignoreCase = true) ||
+            findExternalTemperatureGetter(type) != null
     }
 
     private fun findExternalTemperatureGetter(type: Class<*>): Method? {
-        val method = type.methods.firstOrNull { candidate ->
-            candidate.name == EXTERNAL_TEMP_GETTER &&
+        val method = allMethods(type).firstOrNull { candidate ->
+            (candidate.name == EXTERNAL_TEMP_GETTER || candidate.name.contains(EXTERNAL_TEMP_GETTER, ignoreCase = true)) &&
                 candidate.parameterCount == 0 &&
                 returnsNumericValue(candidate.returnType)
         } ?: return null
-        method.isAccessible = true
         return method
     }
 
     private fun registerCallbackIfPossible(manager: Any): CallbackRegistration? {
-        val candidates = manager.javaClass.methods
+        val candidates = allMethods(manager.javaClass)
             .mapNotNull { method ->
                 val listenerIndex = method.parameterTypes.indexOfFirst(::isExternalTemperatureListenerType)
                 if (listenerIndex == -1) {
@@ -168,11 +246,23 @@ internal class VehicleTemperatureSource(private val context: Context) {
             }
             .sortedBy { registrationPriority(it.method.name) }
 
+        var firstFailure: String? = null
         for (candidate in candidates) {
-            val callback = createTemperatureCallback(candidate.listenerType) ?: continue
+            val callback = createTemperatureCallback(candidate.listenerType)
+            if (callback == null) {
+                if (firstFailure == null && !candidate.listenerType.isInterface) {
+                    firstFailure = "${candidate.listenerType.name} is not an interface listener."
+                }
+                continue
+            }
             val args = buildInvocationArgs(candidate.method.parameterTypes, candidate.listenerIndex, callback)
             val registrationOutcome = runCatching { candidate.method.invoke(manager, *args) }
-            if (registrationOutcome.isFailure) continue
+            if (registrationOutcome.isFailure) {
+                if (firstFailure == null) {
+                    firstFailure = "${candidate.method.name} failed: ${describeThrowable(registrationOutcome.exceptionOrNull())}"
+                }
+                continue
+            }
             val releaseAction = buildUnregisterAction(
                 manager = manager,
                 registerMethod = candidate.method,
@@ -181,6 +271,9 @@ internal class VehicleTemperatureSource(private val context: Context) {
                 registrationResult = registrationOutcome.getOrNull()
             )
             return CallbackRegistration(releaseAction)
+        }
+        if (firstFailure != null) {
+            AppLogger.log(TAG, "Live subscription unavailable for ${manager.javaClass.name}: $firstFailure")
         }
         return null
     }
@@ -203,7 +296,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
             return { runCatching { returnedClose.invoke(registrationResult) } }
         }
 
-        val unregisterMethod = manager.javaClass.methods.firstOrNull { method ->
+        val unregisterMethod = allMethods(manager.javaClass).firstOrNull { method ->
             val name = method.name.lowercase()
             (name.contains("unregister") || name.contains("remove")) &&
                 method.parameterTypes.indexOfFirst { listenerType.isAssignableFrom(it) } != -1
@@ -250,7 +343,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
     }
 
     private fun isExternalTemperatureListenerType(type: Class<*>): Boolean {
-        return type.isInterface && type.methods.any { method ->
+        return type.isInterface && allMethods(type).any { method ->
             method.name == EXTERNAL_TEMP_CALLBACK &&
                 method.parameterCount == 1 &&
                 returnsNumericValue(method.parameterTypes[0])
@@ -279,6 +372,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
     }
 
     private fun publishTemperature(value: Float, fromCallback: Boolean): WeatherFetchResult {
+        diagnosticMessage = null
         val result = WeatherFetchResult(
             state = OverlayWeatherState(
                 outsideTemperatureC = value,
@@ -316,6 +410,64 @@ internal class VehicleTemperatureSource(private val context: Context) {
 
     private fun defaultReturnValue(type: Class<*>): Any? = defaultParameterValue(type)
 
+    private fun allMethods(type: Class<*>): List<Method> {
+        val methods = mutableListOf<Method>()
+        var current: Class<*>? = type
+        while (current != null && current != Any::class.java) {
+            current.declaredMethods.forEach { method ->
+                runCatching { method.isAccessible = true }
+                methods += method
+            }
+            current = current.superclass
+        }
+        return methods.distinctBy { method ->
+            method.name + method.parameterTypes.joinToString(separator = ",") { it.name } + method.returnType.name
+        }
+    }
+
+    private fun allFields(type: Class<*>): List<java.lang.reflect.Field> {
+        val fields = mutableListOf<java.lang.reflect.Field>()
+        var current: Class<*>? = type
+        while (current != null && current != Any::class.java) {
+            current.declaredFields.forEach { field ->
+                runCatching { field.isAccessible = true }
+                fields += field
+            }
+            current = current.superclass
+        }
+        return fields.distinctBy { it.name + it.type.name }
+    }
+
+    private fun discoverNestedManagers(
+        owner: Any?,
+        releaseAction: (() -> Unit)?,
+        addCandidate: (Any?, (() -> Unit)?) -> Unit
+    ) {
+        owner ?: return
+        allMethods(owner.javaClass)
+            .filter { method ->
+                method.parameterCount == 0 &&
+                    !method.returnType.isPrimitive &&
+                    !method.returnType.name.startsWith("java.") &&
+                    (
+                        mayExposeExternalTemperature(method.returnType) ||
+                            method.name.contains("manager", ignoreCase = true) ||
+                            method.name.contains("vehicle", ignoreCase = true) ||
+                            method.name.contains("car", ignoreCase = true)
+                        )
+            }
+            .forEach { method ->
+                val nested = runCatching { method.invoke(owner) }.getOrNull()
+                addCandidate(nested, releaseAction)
+            }
+    }
+
+    private fun recordDiagnostic(message: String) {
+        if (diagnosticMessage == message) return
+        diagnosticMessage = message
+        AppLogger.log(TAG, message)
+    }
+
     private data class ManagerCandidate(
         val instance: Any,
         val releaseAction: (() -> Unit)?
@@ -333,11 +485,25 @@ internal class VehicleTemperatureSource(private val context: Context) {
         val callbackRegistration: CallbackRegistration?,
         val releaseAction: (() -> Unit)?
     ) {
-        fun readCurrentTemperature(): Float? {
-            return runCatching { getter.invoke(manager) as? Number }
-                .getOrNull()
-                ?.toFloat()
-                ?.takeUnless { it.isNaN() }
+        fun readCurrentTemperature(): TemperatureReadResult {
+            return runCatching { getter.invoke(manager) }
+                .fold(
+                    onSuccess = { rawValue ->
+                        val value = (rawValue as? Number)?.toFloat()?.takeUnless { it.isNaN() }
+                        if (value != null) {
+                            TemperatureReadResult(value = value)
+                        } else {
+                            TemperatureReadResult(
+                                errorMessage = "${manager.javaClass.name}.${getter.name}() returned ${rawValue?.javaClass?.name ?: "null"}."
+                            )
+                        }
+                    },
+                    onFailure = { error ->
+                        TemperatureReadResult(
+                            errorMessage = "${manager.javaClass.name}.${getter.name}() failed: ${describeThrowable(error)}"
+                        )
+                    }
+                )
         }
 
         fun close() {
@@ -346,9 +512,24 @@ internal class VehicleTemperatureSource(private val context: Context) {
         }
     }
 
+    private data class TemperatureReadResult(
+        val value: Float? = null,
+        val errorMessage: String? = null
+    )
+
     private class CallbackRegistration(private val releaseAction: (() -> Unit)?) {
         fun close() {
             releaseAction?.invoke()
         }
+    }
+}
+
+private fun describeThrowable(throwable: Throwable?): String {
+    val root = generateSequence(throwable) { it.cause }.lastOrNull() ?: return "Unknown error"
+    val message = root.message?.takeIf { it.isNotBlank() }
+    return if (message != null) {
+        "${root.javaClass.simpleName}: $message"
+    } else {
+        root.javaClass.simpleName
     }
 }
