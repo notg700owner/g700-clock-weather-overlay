@@ -35,7 +35,7 @@
             android:name=".service.OverlayService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync|location" />
+            android:foregroundServiceType="dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

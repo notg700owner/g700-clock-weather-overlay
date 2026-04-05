@@ -12,15 +12,17 @@ import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
 private const val TAG = "VehicleTempSource"
-private const val EXTERNAL_TEMP_GETTER = "getEXTERNALTEMPERATURE_C"
 private const val EXTERNAL_TEMP_CALLBACK = "onEXTERNALTEMPERATURE_C"
 private const val VEHICLE_SOURCE_LABEL = "Vehicle API"
-private val TEMPERATURE_GETTER_NAMES = listOf(
+private const val AUTOLINK_RETRY_ATTEMPTS = 8
+private const val AUTOLINK_RETRY_DELAY_MS = 250L
+private const val OUTSIDE_TEMPERATURE_PROPERTY_ID = 0x11600305.toInt()
+private val DIRECT_TEMPERATURE_GETTER_NAMES = listOf(
     AutolinkMethodCatalog.OUTDOOR_TEMP_GETTER,
     "getOutdoorTemp",
     "outdoorTemp"
 )
-private val TEMPERATURE_FIELD_NAMES = listOf(
+private val DIRECT_TEMPERATURE_FIELD_NAMES = listOf(
     "outdoorTemp",
     "externalTemperatureC",
     "externalTempC"
@@ -29,158 +31,84 @@ private val TEMPERATURE_FIELD_NAMES = listOf(
 internal class VehicleTemperatureSource(private val context: Context) {
     private val mutableUpdates = MutableStateFlow<WeatherFetchResult?>(null)
     val updates: StateFlow<WeatherFetchResult?> = mutableUpdates.asStateFlow()
+
     var diagnosticMessage: String? = null
         private set
 
-    @Volatile
-    private var binding: TemperatureBinding? = null
+    private val bindingLock = Any()
+    private var autolinkBinding: DirectTemperatureBinding? = null
+    private var androidCarBinding: AndroidCarTemperatureBinding? = null
+    private var autolinkDiscoveryAttempted = false
+    private var androidCarDiscoveryAttempted = false
 
     val hasActiveSubscription: Boolean
-        get() = binding?.callbackRegistration != null
+        get() = synchronized(bindingLock) {
+            autolinkBinding?.callbackRegistration != null
+        }
 
     fun start() {
-        val activeBinding = ensureBinding() ?: return
-        if (mutableUpdates.value == null) {
-            val read = activeBinding.readCurrentTemperature()
-            if (read.value != null) {
-                publishTemperature(read.value, fromCallback = false)
-            } else {
-                recordDiagnostic(
-                    read.errorMessage
-                        ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C()/outdoorTemp returned no value."
-                )
-            }
-        }
+        ensureAutolinkBinding()
     }
 
     fun stop() {
-        synchronized(this) {
-            binding?.close()
-            binding = null
+        synchronized(bindingLock) {
+            autolinkBinding?.close()
+            androidCarBinding?.close()
+            autolinkBinding = null
+            androidCarBinding = null
+            autolinkDiscoveryAttempted = false
+            androidCarDiscoveryAttempted = false
         }
     }
 
     fun latestResult(): WeatherFetchResult? {
-        mutableUpdates.value?.let { return it }
-        val activeBinding = ensureBinding() ?: return null
-        val read = activeBinding.readCurrentTemperature()
-        if (read.value == null) {
-            recordDiagnostic(
-                read.errorMessage
-                    ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C()/outdoorTemp returned no value."
-            )
+        val autolink = ensureAutolinkBinding()
+        val androidCar = ensureAndroidCarBinding()
+
+        if (autolink == null && androidCar == null) {
+            recordDiagnostic("No vehicle temperature source was found. Expected Autolink car manager or Android Car property manager.")
             return mutableUpdates.value
         }
-        return publishTemperature(read.value, fromCallback = false)
-    }
 
-    private fun ensureBinding(): TemperatureBinding? = synchronized(this) {
-        binding?.let { return it }
-        val discovered = discoverBinding() ?: return null
-        binding = discovered
-        diagnosticMessage = null
-        return discovered
-    }
-
-    private fun discoverBinding(): TemperatureBinding? {
-        val attemptedTypes = linkedSetOf<String>()
-        for (candidate in discoverCandidates()) {
-            attemptedTypes += candidate.instance.javaClass.name
-            val accessor = findExternalTemperatureAccessor(candidate.instance.javaClass) ?: continue
-            val callbackRegistration = registerCallbackIfPossible(candidate.instance)
-            AppLogger.log(
-                TAG,
-                "Using ${candidate.instance.javaClass.name} for ${accessor.debugName}" +
-                    if (callbackRegistration != null) " with live subscription" else " with getter fallback"
-            )
-            return TemperatureBinding(
-                manager = candidate.instance,
-                accessor = accessor,
-                callbackRegistration = callbackRegistration,
-                releaseAction = candidate.releaseAction
-            )
+        val reads = mutableListOf<SourceRead>()
+        if (autolink != null) {
+            reads += readAutolinkTemperature(autolink)
         }
-        val attemptedSummary = attemptedTypes.take(4).joinToString()
-        recordDiagnostic(
-            if (attemptedSummary.isBlank()) {
-                "No compatible car manager exposing getEXTERNALTEMPERATURE_C()/outdoorTemp was found."
-            } else {
-                "No compatible car manager exposing getEXTERNALTEMPERATURE_C()/outdoorTemp was found. Checked: $attemptedSummary"
+        if (androidCar != null) {
+            reads += androidCar.readCurrentTemperature()
+        }
+
+        selectBestRead(reads)?.let { chosen ->
+            val diagnostic = when {
+                chosen.source == SourceKind.ANDROID_CAR && reads.any { it.source == SourceKind.AUTOLINK && it.isPlaceholder } -> {
+                    "Autolink returned a placeholder value; using Android Car outside temperature."
+                }
+                else -> chosen.diagnostic
             }
-        )
-        return null
+            chosen.value?.let { return publishTemperature(it, diagnostic) }
+        }
+
+        val message = reads.mapNotNull { it.errorMessage }.joinToString(" | ")
+            .ifBlank { "Vehicle temperature is unavailable." }
+        recordDiagnostic(message)
+        return mutableUpdates.value
     }
 
-    private fun discoverCandidates(): List<ManagerCandidate> {
-        val candidates = linkedMapOf<String, ManagerCandidate>()
-
-        fun addCandidate(instance: Any?, releaseAction: (() -> Unit)? = null) {
-            instance ?: return
-            val key = instance.javaClass.name + "@" + System.identityHashCode(instance)
-            candidates.putIfAbsent(key, ManagerCandidate(instance, releaseAction))
-        }
-
-        discoverAutolinkManager()?.let { addCandidate(it.instance, it.releaseAction) }
-
-        listOf(
-            "car",
-            "vehicle",
-            "car_service",
-            "vehicle_service",
-            "car_manager",
-            "vehicle_manager"
-        ).forEach { serviceName ->
-            addCandidate(runCatching { context.getSystemService(serviceName) }.getOrNull())
-        }
-
-        val carClass = runCatching { Class.forName("android.car.Car") }.getOrNull()
-        val carInstance = createCarInstance(carClass)
-        val carReleaseAction = carInstance?.let(::buildReleaseAction)
-
-        addCandidate(carInstance, carReleaseAction)
-
-        if (carClass != null && carInstance != null) {
-            val getCarManager = allMethods(carClass).firstOrNull { method ->
-                method.name == "getCarManager" &&
-                    method.parameterCount == 1 &&
-                    method.parameterTypes[0] == String::class.java
-            }
-
-            allFields(carClass)
-                .filter { Modifier.isStatic(it.modifiers) && it.type == String::class.java && it.name.contains("SERVICE") }
-                .forEach { field ->
-                    val serviceName = runCatching { field.get(null) as? String }.getOrNull() ?: return@forEach
-                    val manager = runCatching { getCarManager?.invoke(carInstance, serviceName) }.getOrNull()
-                    addCandidate(manager, carReleaseAction)
-                    discoverNestedManagers(manager, carReleaseAction, ::addCandidate)
-                }
-
-            allMethods(carInstance.javaClass)
-                .filter { method ->
-                    method.parameterCount == 0 &&
-                        method.name.startsWith("get") &&
-                        !method.returnType.isPrimitive &&
-                        mayExposeExternalTemperature(method.returnType)
-                }
-                .forEach { method ->
-                    val manager = runCatching { method.invoke(carInstance) }.getOrNull()
-                    addCandidate(manager, carReleaseAction)
-                    discoverNestedManagers(manager, carReleaseAction, ::addCandidate)
-                }
-
-            allFields(carInstance.javaClass)
-                .filter { !Modifier.isStatic(it.modifiers) && mayExposeExternalTemperature(it.type) }
-                .forEach { field ->
-                    val manager = runCatching { field.get(carInstance) }.getOrNull()
-                    addCandidate(manager, carReleaseAction)
-                    discoverNestedManagers(manager, carReleaseAction, ::addCandidate)
-                }
-        }
-
-        return candidates.values.toList()
+    private fun ensureAutolinkBinding(): DirectTemperatureBinding? = synchronized(bindingLock) {
+        if (autolinkDiscoveryAttempted) return autolinkBinding
+        autolinkDiscoveryAttempted = true
+        autolinkBinding = discoverAutolinkBinding()
+        autolinkBinding
     }
 
-    private fun discoverAutolinkManager(): ManagerCandidate? {
+    private fun ensureAndroidCarBinding(): AndroidCarTemperatureBinding? = synchronized(bindingLock) {
+        if (androidCarDiscoveryAttempted) return androidCarBinding
+        androidCarDiscoveryAttempted = true
+        androidCarBinding = discoverAndroidCarBinding()
+        androidCarBinding
+    }
+
+    private fun discoverAutolinkBinding(): DirectTemperatureBinding? {
         val apiClass = runCatching { Class.forName(AutolinkMethodCatalog.API_CLASS) }.getOrNull()
             ?: return null
         runCatching { Class.forName(AutolinkMethodCatalog.CAR_MANAGER_CLASS) }
@@ -190,95 +118,248 @@ internal class VehicleTemperatureSource(private val context: Context) {
                 method.parameterCount == 1 &&
                 method.parameterTypes[0] == Context::class.java
         } ?: return null
-        val apiInstance = runCatching { createApi.invoke(null, context.applicationContext) }.getOrNull()
-            ?: return null
+
+        val apiInstance = runCatching { createApi.invoke(null, context.applicationContext) }
+            .getOrElse { error ->
+                AppLogger.log(TAG, "Autolink Api.createApi failed", error)
+                return null
+            } ?: return null
+
         val getManager = allMethods(apiInstance.javaClass).firstOrNull { method ->
             method.name == "getManager" &&
                 method.parameterCount == 1 &&
                 method.parameterTypes[0] == String::class.java
         } ?: return null
-        val manager = runCatching {
-            getManager.invoke(apiInstance, "car")
-        }.getOrNull() ?: return null
+
+        val manager = runCatching { getManager.invoke(apiInstance, "car") }
+            .getOrElse { error ->
+                AppLogger.log(TAG, "Autolink Api.getManager(\"car\") failed", error)
+                return null
+            } ?: return null
+
+        val accessor = findDirectTemperatureAccessor(manager.javaClass) ?: return null
+        val callbackRegistration = registerCallbackIfPossible(manager)
         val releaseAction = combineReleaseActions(
             buildReleaseAction(manager),
             buildReleaseAction(apiInstance)
         )
-        AppLogger.log(TAG, "Autolink manager ready: ${manager.javaClass.name}")
-        return ManagerCandidate(manager, releaseAction)
+
+        AppLogger.log(
+            TAG,
+            "Autolink manager ready: ${manager.javaClass.name} using ${accessor.debugName}" +
+                if (callbackRegistration != null) " with live subscription" else ""
+        )
+
+        return DirectTemperatureBinding(
+            manager = manager,
+            accessor = accessor,
+            callbackRegistration = callbackRegistration,
+            releaseAction = releaseAction
+        )
     }
 
-    private fun createCarInstance(carClass: Class<*>?): Any? {
-        carClass ?: return null
+    private fun discoverAndroidCarBinding(): AndroidCarTemperatureBinding? {
+        val carClass = runCatching { Class.forName("android.car.Car") }.getOrNull() ?: return null
         val createCar = allMethods(carClass).firstOrNull { method ->
             Modifier.isStatic(method.modifiers) &&
                 method.name == "createCar" &&
                 method.parameterTypes.firstOrNull() == Context::class.java
         } ?: return null
+
         val args = Array(createCar.parameterCount) { index ->
             when (createCar.parameterTypes[index]) {
-                Context::class.java -> context
+                Context::class.java -> context.applicationContext
                 else -> defaultParameterValue(createCar.parameterTypes[index])
             }
         }
-        return runCatching { createCar.invoke(null, *args) }.getOrNull()
-    }
 
-    private fun buildReleaseAction(owner: Any): (() -> Unit)? {
-        val method = allMethods(owner.javaClass).firstOrNull { candidate ->
-            candidate.parameterCount == 0 && (
-                candidate.name == "disconnect" ||
-                    candidate.name == "disconnectFromCarService" ||
-                    candidate.name == "close"
-                )
+        val carInstance = runCatching { createCar.invoke(null, *args) }
+            .getOrElse { error ->
+                AppLogger.log(TAG, "android.car.Car.createCar failed", error)
+                return null
+            } ?: return null
+
+        waitForAndroidCarConnection(carInstance)
+
+        val getCarManager = allMethods(carInstance.javaClass).firstOrNull { method ->
+            method.name == "getCarManager" &&
+                method.parameterCount == 1 &&
+                method.parameterTypes[0] == String::class.java
         } ?: return null
-        return { runCatching { method.invoke(owner) } }
+
+        val propertyManager = runCatching { getCarManager.invoke(carInstance, "property") }
+            .getOrElse { error ->
+                AppLogger.log(TAG, "android.car.Car.getCarManager(\"property\") failed", error)
+                return null
+            } ?: return null
+
+        val releaseAction = buildReleaseAction(carInstance)
+        val targets = discoverPropertyTargets(propertyManager).ifEmpty {
+            listOf(
+                CarPropertyTarget(
+                    propertyId = OUTSIDE_TEMPERATURE_PROPERTY_ID,
+                    areaId = 0,
+                    label = "ENV_OUTSIDE_TEMPERATURE",
+                    typeName = "Float"
+                )
+            )
+        }
+
+        AppLogger.log(
+            TAG,
+            "Android Car property manager ready: ${propertyManager.javaClass.name} with ${targets.size} outside-temperature target(s)"
+        )
+
+        return AndroidCarTemperatureBinding(
+            propertyManager = propertyManager,
+            targets = targets,
+            releaseAction = releaseAction
+        )
     }
 
-    private fun mayExposeExternalTemperature(type: Class<*>): Boolean {
-        return isRelevantVehicleType(type) ||
-            findExternalTemperatureAccessor(type) != null
+    private fun readAutolinkTemperature(binding: DirectTemperatureBinding): SourceRead {
+        var lastRead = binding.readCurrentTemperature()
+        repeat(AUTOLINK_RETRY_ATTEMPTS - 1) {
+            val value = lastRead.value
+            if (value != null && !looksLikeAutolinkPlaceholder(value)) return@repeat
+            Thread.sleep(AUTOLINK_RETRY_DELAY_MS)
+            lastRead = binding.readCurrentTemperature()
+        }
+
+        val value = lastRead.value
+        if (value != null) {
+            return SourceRead(
+                source = SourceKind.AUTOLINK,
+                value = value,
+                diagnostic = "Using Autolink exterior temperature.",
+                errorMessage = if (looksLikeAutolinkPlaceholder(value)) {
+                    "Autolink returned placeholder temperature ${formatTemp(value)}."
+                } else {
+                    null
+                },
+                isPlaceholder = looksLikeAutolinkPlaceholder(value)
+            )
+        }
+
+        return SourceRead(
+            source = SourceKind.AUTOLINK,
+            errorMessage = lastRead.errorMessage ?: "Autolink exterior temperature is unavailable.",
+            diagnostic = "Autolink exterior temperature is unavailable."
+        )
     }
 
-    private fun isRelevantVehicleType(type: Class<*>): Boolean {
-        val name = type.name
-        val simpleName = type.simpleName
-        return name.contains("autolink", ignoreCase = true) ||
-            name.contains(".car.", ignoreCase = true) ||
-            simpleName.contains("Car", ignoreCase = true) ||
-            simpleName.contains("Vehicle", ignoreCase = true)
+    private fun selectBestRead(reads: List<SourceRead>): SourceRead? {
+        val autolink = reads.firstOrNull { it.source == SourceKind.AUTOLINK && it.value != null }
+        val androidCar = reads.firstOrNull { it.source == SourceKind.ANDROID_CAR && it.value != null }
+
+        return when {
+            autolink?.value != null && !autolink.isPlaceholder -> autolink
+            androidCar?.value != null -> androidCar
+            autolink?.value != null -> autolink
+            else -> reads.firstOrNull { it.value != null }
+        }
     }
 
-    private fun findExternalTemperatureAccessor(type: Class<*>): TemperatureAccessor? {
-        val exactMethod = allMethods(type).firstOrNull { candidate ->
+    private fun onAutolinkCallbackTemperature(value: Float) {
+        if (looksLikeAutolinkPlaceholder(value)) {
+            val fallbackValue = ensureAndroidCarBinding()
+                ?.readCurrentTemperature()
+                ?.takeUnless { it.value == null }
+            if (fallbackValue?.value != null) {
+                publishTemperature(
+                    fallbackValue.value,
+                    "Autolink callback returned a placeholder value; using Android Car outside temperature."
+                )
+                return
+            }
+        }
+
+        publishTemperature(value, "Vehicle temperature updated from Autolink callback.")
+    }
+
+    private fun waitForAndroidCarConnection(carInstance: Any) {
+        val isConnected = allMethods(carInstance.javaClass).firstOrNull {
+            it.name == "isConnected" && it.parameterCount == 0
+        }
+        val isConnecting = allMethods(carInstance.javaClass).firstOrNull {
+            it.name == "isConnecting" && it.parameterCount == 0
+        }
+        val connect = allMethods(carInstance.javaClass).firstOrNull {
+            it.name == "connect" && it.parameterCount == 0
+        }
+
+        val connectedNow = runCatching { isConnected?.invoke(carInstance) as? Boolean }.getOrNull() ?: false
+        val connectingNow = runCatching { isConnecting?.invoke(carInstance) as? Boolean }.getOrNull() ?: false
+        if (!connectedNow && !connectingNow) {
+            runCatching { connect?.invoke(carInstance) }
+        }
+
+        repeat(12) {
+            val ready = runCatching { isConnected?.invoke(carInstance) as? Boolean }.getOrNull() ?: false
+            if (ready) return
+            Thread.sleep(250L)
+        }
+    }
+
+    private fun discoverPropertyTargets(propertyManager: Any): List<CarPropertyTarget> {
+        val getPropertyList = allMethods(propertyManager.javaClass).firstOrNull {
+            it.name == "getPropertyList" && it.parameterCount == 0
+        } ?: return emptyList()
+
+        val configs = runCatching { getPropertyList.invoke(propertyManager) as? List<*> }.getOrNull().orEmpty()
+        val targets = mutableListOf<CarPropertyTarget>()
+        configs.filterNotNull().forEach { config ->
+            val propertyId = runCatching { invokeZeroArg(config, "getPropertyId") }.getOrNull()?.toIntValue() ?: return@forEach
+            val label = resolveAndroidCarPropertyName(propertyId)
+            val matches = propertyId == OUTSIDE_TEMPERATURE_PROPERTY_ID ||
+                label.contains("OUTSIDE", ignoreCase = true) ||
+                label.contains("EXTERNAL", ignoreCase = true) ||
+                label.contains("AMBIENT", ignoreCase = true)
+            if (!matches) return@forEach
+
+            val typeName = runCatching { invokeZeroArg(config, "getPropertyType") }.getOrNull()?.toString()
+            val areaIds = runCatching { invokeZeroArg(config, "getAreaIds") }.getOrNull()
+            val areas = when (areaIds) {
+                is IntArray -> areaIds.toList()
+                is Array<*> -> areaIds.mapNotNull { it.toIntValue() }
+                else -> listOf(0)
+            }.ifEmpty { listOf(0) }
+
+            areas.forEach { areaId ->
+                targets += CarPropertyTarget(
+                    propertyId = propertyId,
+                    areaId = areaId,
+                    label = label,
+                    typeName = typeName
+                )
+            }
+        }
+        return targets
+    }
+
+    private fun findDirectTemperatureAccessor(type: Class<*>): DirectTemperatureAccessor? {
+        val method = allMethods(type).firstOrNull { candidate ->
             candidate.parameterCount == 0 &&
                 returnsNumericValue(candidate.returnType) &&
-                TEMPERATURE_GETTER_NAMES.any { alias ->
+                DIRECT_TEMPERATURE_GETTER_NAMES.any { alias ->
                     candidate.name == alias || candidate.name.equals(alias, ignoreCase = true)
                 }
         }
-        if (exactMethod != null) {
-            return TemperatureAccessor.MethodAccessor(exactMethod)
+        if (method != null) {
+            return DirectTemperatureAccessor.MethodAccessor(method)
         }
 
-        val exactField = allFields(type).firstOrNull { candidate ->
+        val field = allFields(type).firstOrNull { candidate ->
             returnsNumericValue(candidate.type) &&
-                TEMPERATURE_FIELD_NAMES.any { alias ->
+                DIRECT_TEMPERATURE_FIELD_NAMES.any { alias ->
                     candidate.name == alias || candidate.name.equals(alias, ignoreCase = true)
                 }
         }
-        if (exactField != null) {
-            return TemperatureAccessor.FieldAccessor(exactField)
+        if (field != null) {
+            return DirectTemperatureAccessor.FieldAccessor(field)
         }
 
-        val looseMethod = allMethods(type).firstOrNull { candidate ->
-            candidate.parameterCount == 0 &&
-                returnsNumericValue(candidate.returnType) &&
-                TEMPERATURE_GETTER_NAMES.any { alias ->
-                    candidate.name.contains(alias, ignoreCase = true)
-                }
-        }
-        return looseMethod?.let(TemperatureAccessor::MethodAccessor)
+        return null
     }
 
     private fun registerCallbackIfPossible(manager: Any): CallbackRegistration? {
@@ -293,34 +374,18 @@ internal class VehicleTemperatureSource(private val context: Context) {
             }
             .sortedBy { registrationPriority(it.method.name) }
 
-        var firstFailure: String? = null
         for (candidate in candidates) {
-            val callback = createTemperatureCallback(candidate.listenerType)
-            if (callback == null) {
-                if (firstFailure == null && !candidate.listenerType.isInterface) {
-                    firstFailure = "${candidate.listenerType.name} is not an interface listener."
-                }
-                continue
-            }
+            val callback = createTemperatureCallback(candidate.listenerType) ?: continue
             val args = buildInvocationArgs(candidate.method.parameterTypes, candidate.listenerIndex, callback)
-            val registrationOutcome = runCatching { candidate.method.invoke(manager, *args) }
-            if (registrationOutcome.isFailure) {
-                if (firstFailure == null) {
-                    firstFailure = "${candidate.method.name} failed: ${describeThrowable(registrationOutcome.exceptionOrNull())}"
-                }
-                continue
-            }
+            val registration = runCatching { candidate.method.invoke(manager, *args) }.getOrNull() ?: continue
             val releaseAction = buildUnregisterAction(
                 manager = manager,
                 registerMethod = candidate.method,
                 listenerType = candidate.listenerType,
                 callback = callback,
-                registrationResult = registrationOutcome.getOrNull()
+                registrationResult = registration
             )
             return CallbackRegistration(releaseAction)
-        }
-        if (firstFailure != null) {
-            AppLogger.log(TAG, "Live subscription unavailable for ${manager.javaClass.name}: $firstFailure")
         }
         return null
     }
@@ -377,7 +442,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
         ) { _, method, args ->
             when {
                 method.name == EXTERNAL_TEMP_CALLBACK && args?.size == 1 -> {
-                    (args.firstOrNull() as? Number)?.toFloat()?.let { publishTemperature(it, fromCallback = true) }
+                    (args.firstOrNull() as? Number)?.toFloat()?.let(::onAutolinkCallbackTemperature)
                     defaultReturnValue(method.returnType)
                 }
                 method.name == "toString" && method.parameterCount == 0 -> "ExternalTemperatureCallbackProxy"
@@ -410,38 +475,101 @@ internal class VehicleTemperatureSource(private val context: Context) {
 
     private fun buildInvocationArgs(parameterTypes: Array<Class<*>>, targetIndex: Int, targetValue: Any): Array<Any?> {
         return Array(parameterTypes.size) { index ->
-            if (index == targetIndex) {
-                targetValue
-            } else {
-                defaultParameterValue(parameterTypes[index])
-            }
+            if (index == targetIndex) targetValue else defaultParameterValue(parameterTypes[index])
         }
     }
 
-    private fun publishTemperature(value: Float, fromCallback: Boolean): WeatherFetchResult {
+    private fun publishTemperature(value: Float, diagnostic: String): WeatherFetchResult {
         diagnosticMessage = null
-        val status = if (fromCallback) {
-            "Vehicle temperature updated from callback."
-        } else {
-            "Using vehicle temperature."
-        }
+        AppLogger.log(TAG, "$diagnostic (${formatTemp(value)})")
         val result = WeatherFetchResult(
             state = OverlayWeatherState(
                 outsideTemperatureC = value,
                 sourceLabel = VEHICLE_SOURCE_LABEL
             ),
-            status = status,
+            status = "Using vehicle temperature.",
             outdoorTemp = value,
-            vehicleTemperatureDiagnostic = status
+            vehicleTemperatureDiagnostic = diagnostic
         )
         mutableUpdates.value = result
         return result
+    }
+
+    private fun looksLikeAutolinkPlaceholder(value: Float): Boolean {
+        return value == -1f || value.isNaN()
+    }
+
+    private fun resolveAndroidCarPropertyName(propertyId: Int): String {
+        return when (propertyId) {
+            OUTSIDE_TEMPERATURE_PROPERTY_ID -> "ENV_OUTSIDE_TEMPERATURE"
+            else -> "PROPERTY_0x${propertyId.toUInt().toString(16)}"
+        }
+    }
+
+    private fun invokeZeroArg(target: Any, methodName: String): Any? {
+        val method = allMethods(target.javaClass).firstOrNull {
+            it.name == methodName && it.parameterCount == 0
+        } ?: return null
+        return method.invoke(target)
+    }
+
+    private fun unwrapCarPropertyValue(value: Any?): Any? {
+        value ?: return null
+        val method = allMethods(value.javaClass).firstOrNull {
+            it.name == "getValue" && it.parameterCount == 0
+        } ?: return value
+        return runCatching { method.invoke(value) }.getOrNull() ?: value
+    }
+
+    private fun readAndroidCarProperty(propertyManager: Any, target: CarPropertyTarget): Float? {
+        val directValue = runCatching {
+            when {
+                target.typeName?.contains("Float") == true || target.typeName?.contains("float") == true -> {
+                    invokeMethod(propertyManager, "getFloatProperty", target.propertyId, target.areaId)
+                }
+                target.typeName?.contains("Integer") == true || target.typeName?.contains("int") == true -> {
+                    invokeMethod(propertyManager, "getIntProperty", target.propertyId, target.areaId)
+                }
+                target.typeName?.contains("Boolean") == true || target.typeName?.contains("boolean") == true -> {
+                    invokeMethod(propertyManager, "getBooleanProperty", target.propertyId, target.areaId)
+                }
+                else -> invokeMethod(propertyManager, "getProperty", target.propertyId, target.areaId)
+            }
+        }.recoverCatching {
+            invokeMethod(propertyManager, "getProperty", target.propertyId, target.areaId)
+        }.getOrNull()
+
+        return unwrapCarPropertyValue(directValue).toFloatValue()
+    }
+
+    private fun invokeMethod(target: Any, methodName: String, vararg args: Any?): Any? {
+        val method = allMethods(target.javaClass).firstOrNull { candidate ->
+            candidate.name == methodName && candidate.parameterCount == args.size
+        } ?: return null
+        return method.invoke(target, *args)
     }
 
     private fun returnsNumericValue(type: Class<*>): Boolean {
         return type == Float::class.java ||
             type == java.lang.Float.TYPE ||
             Number::class.java.isAssignableFrom(type)
+    }
+
+    private fun buildReleaseAction(owner: Any): (() -> Unit)? {
+        val method = allMethods(owner.javaClass).firstOrNull { candidate ->
+            candidate.parameterCount == 0 && (
+                candidate.name == "disconnect" ||
+                    candidate.name == "disconnectFromCarService" ||
+                    candidate.name == "close"
+                )
+        } ?: return null
+        return { runCatching { method.invoke(owner) } }
+    }
+
+    private fun combineReleaseActions(vararg actions: (() -> Unit)?): (() -> Unit)? {
+        val validActions = actions.filterNotNull()
+        if (validActions.isEmpty()) return null
+        return { validActions.forEach { runCatching { it.invoke() } } }
     }
 
     private fun defaultParameterValue(type: Class<*>): Any? {
@@ -475,8 +603,8 @@ internal class VehicleTemperatureSource(private val context: Context) {
         }
     }
 
-    private fun allFields(type: Class<*>): List<java.lang.reflect.Field> {
-        val fields = mutableListOf<java.lang.reflect.Field>()
+    private fun allFields(type: Class<*>): List<Field> {
+        val fields = mutableListOf<Field>()
         var current: Class<*>? = type
         while (current != null && current != Any::class.java) {
             current.declaredFields.forEach { field ->
@@ -488,59 +616,15 @@ internal class VehicleTemperatureSource(private val context: Context) {
         return fields.distinctBy { it.name + it.type.name }
     }
 
-    private fun discoverNestedManagers(
-        owner: Any?,
-        releaseAction: (() -> Unit)?,
-        addCandidate: (Any?, (() -> Unit)?) -> Unit
-    ) {
-        owner ?: return
-        allMethods(owner.javaClass)
-            .filter { method ->
-                method.parameterCount == 0 &&
-                    !method.returnType.isPrimitive &&
-                    !method.returnType.name.startsWith("java.") &&
-                    (
-                        mayExposeExternalTemperature(method.returnType) ||
-                            method.name.contains("manager", ignoreCase = true) ||
-                            method.name.contains("vehicle", ignoreCase = true) ||
-                            method.name.contains("car", ignoreCase = true) ||
-                            method.name.contains("autolink", ignoreCase = true)
-                        )
-            }
-            .forEach { method ->
-                val nested = runCatching { method.invoke(owner) }.getOrNull()
-                if (nested != null && mayExposeExternalTemperature(nested.javaClass)) {
-                    addCandidate(nested, releaseAction)
-                }
-            }
-    }
-
-    private fun combineReleaseActions(vararg actions: (() -> Unit)?): (() -> Unit)? {
-        val validActions = actions.filterNotNull()
-        if (validActions.isEmpty()) return null
-        return { validActions.forEach { runCatching { it.invoke() } } }
-    }
-
     private fun recordDiagnostic(message: String) {
         if (diagnosticMessage == message) return
         diagnosticMessage = message
         AppLogger.log(TAG, message)
     }
 
-    private data class ManagerCandidate(
-        val instance: Any,
-        val releaseAction: (() -> Unit)?
-    )
-
-    private data class ListenerRegistrationCandidate(
-        val method: Method,
-        val listenerIndex: Int,
-        val listenerType: Class<*>
-    )
-
-    private data class TemperatureBinding(
+    private data class DirectTemperatureBinding(
         val manager: Any,
-        val accessor: TemperatureAccessor,
+        val accessor: DirectTemperatureAccessor,
         val callbackRegistration: CallbackRegistration?,
         val releaseAction: (() -> Unit)?
     ) {
@@ -548,7 +632,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
             return runCatching { accessor.read(manager) }
                 .fold(
                     onSuccess = { rawValue ->
-                        val value = (rawValue as? Number)?.toFloat()?.takeUnless { it.isNaN() }
+                        val value = rawValue.toFloatValue()?.takeUnless { it.isNaN() }
                         if (value != null) {
                             TemperatureReadResult(value = value)
                         } else {
@@ -571,32 +655,117 @@ internal class VehicleTemperatureSource(private val context: Context) {
         }
     }
 
-    private data class TemperatureReadResult(
-        val value: Float? = null,
-        val errorMessage: String? = null
-    )
+    private inner class AndroidCarTemperatureBinding(
+        val propertyManager: Any,
+        val targets: List<CarPropertyTarget>,
+        val releaseAction: (() -> Unit)?
+    ) {
+        fun readCurrentTemperature(): SourceRead {
+            val errors = mutableListOf<String>()
+            targets.forEach { target ->
+                val value = runCatching { readAndroidCarProperty(propertyManager, target) }
+                    .getOrElse { error ->
+                        errors += "${target.label}[area=${target.areaId}] failed: ${describeThrowable(error)}"
+                        null
+                    }
+                if (value != null) {
+                    return SourceRead(
+                        source = SourceKind.ANDROID_CAR,
+                        value = value,
+                        diagnostic = "Using Android Car outside temperature (${target.label})."
+                    )
+                }
+            }
+            return SourceRead(
+                source = SourceKind.ANDROID_CAR,
+                errorMessage = errors.joinToString(" | ").ifBlank { "Android Car outside temperature is unavailable." },
+                diagnostic = "Android Car outside temperature is unavailable."
+            )
+        }
 
-    private sealed interface TemperatureAccessor {
+        fun close() {
+            releaseAction?.invoke()
+        }
+    }
+
+    private sealed interface DirectTemperatureAccessor {
         val debugName: String
         fun read(target: Any): Any?
 
-        data class MethodAccessor(private val method: Method) : TemperatureAccessor {
+        data class MethodAccessor(private val method: Method) : DirectTemperatureAccessor {
             override val debugName: String = "${method.name}()"
             override fun read(target: Any): Any? = method.invoke(target)
         }
 
-        data class FieldAccessor(private val field: Field) : TemperatureAccessor {
+        data class FieldAccessor(private val field: Field) : DirectTemperatureAccessor {
             override val debugName: String = field.name
             override fun read(target: Any): Any? = field.get(target)
         }
     }
+
+    private data class CarPropertyTarget(
+        val propertyId: Int,
+        val areaId: Int,
+        val label: String,
+        val typeName: String?
+    )
+
+    private data class SourceRead(
+        val source: SourceKind,
+        val value: Float? = null,
+        val errorMessage: String? = null,
+        val diagnostic: String,
+        val isPlaceholder: Boolean = false
+    )
+
+    private data class ListenerRegistrationCandidate(
+        val method: Method,
+        val listenerIndex: Int,
+        val listenerType: Class<*>
+    )
+
+    private data class TemperatureReadResult(
+        val value: Float? = null,
+        val errorMessage: String? = null
+    )
 
     private class CallbackRegistration(private val releaseAction: (() -> Unit)?) {
         fun close() {
             releaseAction?.invoke()
         }
     }
+
+    private enum class SourceKind {
+        AUTOLINK,
+        ANDROID_CAR
+    }
 }
+
+private fun Any?.toFloatValue(): Float? {
+    return when (this) {
+        is Float -> this
+        is Double -> this.toFloat()
+        is Int -> this.toFloat()
+        is Long -> this.toFloat()
+        is Short -> this.toFloat()
+        is Byte -> this.toFloat()
+        is String -> this.toFloatOrNull()
+        else -> null
+    }
+}
+
+private fun Any?.toIntValue(): Int? {
+    return when (this) {
+        is Int -> this
+        is Long -> this.toInt()
+        is Short -> this.toInt()
+        is Byte -> this.toInt()
+        is String -> this.toIntOrNull()
+        else -> null
+    }
+}
+
+private fun formatTemp(value: Float): String = "%.1fC".format(value)
 
 private fun describeThrowable(throwable: Throwable?): String {
     val root = generateSequence(throwable) { it.cause }.lastOrNull() ?: return "Unknown error"
