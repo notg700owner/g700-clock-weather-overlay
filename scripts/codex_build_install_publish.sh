@@ -90,6 +90,26 @@ else
   fi
 fi
 
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  RELEASE_TAG="${RELEASE_TAG:-v${VERSION_NAME}}"
+  RELEASE_TITLE="${RELEASE_TITLE:-G700 Clock & Weather ${VERSION_NAME}}"
+  RELEASE_NOTES="${RELEASE_NOTES:-Release ${VERSION_NAME}}"
+  if gh release view "${RELEASE_TAG}" --repo "${UPDATE_OWNER}/${UPDATE_REPO}" >/dev/null 2>&1; then
+    gh release upload "${RELEASE_TAG}" "${APK_TARGET}" \
+      --repo "${UPDATE_OWNER}/${UPDATE_REPO}" \
+      --clobber
+    gh release edit "${RELEASE_TAG}" \
+      --repo "${UPDATE_OWNER}/${UPDATE_REPO}" \
+      --title "${RELEASE_TITLE}" \
+      --notes "${RELEASE_NOTES}"
+  else
+    gh release create "${RELEASE_TAG}" "${APK_TARGET}" \
+      --repo "${UPDATE_OWNER}/${UPDATE_REPO}" \
+      --title "${RELEASE_TITLE}" \
+      --notes "${RELEASE_NOTES}"
+  fi
+fi
+
 if adb devices | awk 'NR>1 && $2 == "device" { found=1 } END { exit found ? 0 : 1 }'; then
   adb install -r "${APK_SOURCE}"
   adb shell pm grant "${PACKAGE_NAME}" android.permission.ACCESS_COARSE_LOCATION || true

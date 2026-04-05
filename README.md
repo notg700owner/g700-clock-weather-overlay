@@ -68,8 +68,9 @@ Use [`scripts/codex_build_install_publish.sh`](scripts/codex_build_install_publi
 4. initialize a local git repo if needed
 5. create the GitHub repo automatically when `gh` is installed and authenticated
 6. commit and push the update feed
-7. install the APK over `adb` when a device is attached
-8. grant the runtime permissions and best-effort battery/install app-ops
+7. create or refresh the matching GitHub Release and attach the APK asset
+8. install the APK over `adb` when a device is attached
+9. grant the runtime permissions and best-effort battery/install app-ops
 
 The script also forces a generic release-bot git author so future release commits do not inherit your machine-level git identity.
 
