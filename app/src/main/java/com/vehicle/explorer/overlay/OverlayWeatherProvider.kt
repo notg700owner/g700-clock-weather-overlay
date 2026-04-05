@@ -1,0 +1,25 @@
+package com.g700.automation.overlay
+
+import com.g700.automation.runtime.ServiceRuntimeBus
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+data class OverlayWeatherState(
+    val conditionLabel: String? = null,
+    val outsideTemperatureC: Float? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val sourceLabel: String = "Open-Meteo",
+    val fetchedAt: Long = System.currentTimeMillis()
+)
+
+interface OverlayWeatherProvider {
+    val weather: Flow<OverlayWeatherState?>
+}
+
+class RuntimeWeatherProvider : OverlayWeatherProvider {
+    override val weather: Flow<OverlayWeatherState?> = ServiceRuntimeBus.state
+        .map { it.weatherState }
+        .distinctUntilChanged()
+}
