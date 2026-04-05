@@ -24,8 +24,8 @@ android {
         applicationId = "com.g700.clockweather"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "2.1.5"
+        versionCode = 10
+        versionName = "2.1.6"
 
         buildConfigField("String", "UPDATE_OWNER", "\"${updateOwner.get()}\"")
         buildConfigField("String", "UPDATE_REPO", "\"${updateRepo.get()}\"")

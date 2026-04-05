@@ -27,6 +27,7 @@ class AppRepository(private val context: Context) {
     private val mutableUiState = MutableStateFlow(AppUiState())
     private val updateUiState = MutableStateFlow(UpdateUiState())
     private val updateChecker = GitHubUpdateChecker(context.applicationContext)
+    private var serviceStartRequested = false
     val uiState: StateFlow<AppUiState> = mutableUiState.asStateFlow()
 
     fun start() {
@@ -45,9 +46,25 @@ class AppRepository(private val context: Context) {
                 )
             }.collectLatest { uiState ->
                 mutableUiState.value = uiState
+                reconcileServiceState(uiState)
             }
         }
         checkForUpdates(silent = true)
+    }
+
+    private fun reconcileServiceState(uiState: AppUiState) {
+        when {
+            !uiState.settings.service.enabled -> {
+                serviceStartRequested = false
+            }
+            uiState.runtime.serviceRunning -> {
+                serviceStartRequested = false
+            }
+            !serviceStartRequested -> {
+                serviceStartRequested = true
+                OverlayServiceController.start(context, reason = "app_open")
+            }
+        }
     }
 
     private fun saveSettings(settings: AppSettings) {
@@ -56,13 +73,16 @@ class AppRepository(private val context: Context) {
         SettingsStore.save(context, next)
         when {
             current.service.enabled && !next.service.enabled -> {
+                serviceStartRequested = false
                 StartupProtectionManager.cancelPendingStartup(context, "Service disabled from the app")
                 OverlayServiceController.stop(context)
             }
             !current.service.enabled && next.service.enabled -> {
+                serviceStartRequested = true
                 OverlayServiceController.start(context, reason = "user_enable")
             }
             current != next && next.service.enabled -> {
+                serviceStartRequested = true
                 OverlayServiceController.refreshSettings(context)
             }
         }

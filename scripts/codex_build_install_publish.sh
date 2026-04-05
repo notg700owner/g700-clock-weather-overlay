@@ -118,7 +118,10 @@ if adb devices | awk 'NR>1 && $2 == "device" { found=1 } END { exit found ? 0 : 
   adb shell pm grant "${PACKAGE_NAME}" android.permission.POST_NOTIFICATIONS || true
   adb shell cmd appops set "${PACKAGE_NAME}" REQUEST_INSTALL_PACKAGES allow || true
   adb shell dumpsys deviceidle whitelist +"${PACKAGE_NAME}" || true
-  adb shell am start -n "${PACKAGE_NAME}/.MainActivity" || true
+  adb shell am start -S -W \
+    -a android.intent.action.MAIN \
+    -c android.intent.category.LAUNCHER \
+    -n "${PACKAGE_NAME}/.MainActivity" || true
 else
   echo "No adb device is attached right now, so install/grant steps were skipped."
 fi
