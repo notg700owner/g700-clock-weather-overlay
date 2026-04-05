@@ -6,6 +6,7 @@ import com.g700.clockweather.overlay.OverlayWeatherState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
@@ -14,6 +15,16 @@ private const val TAG = "VehicleTempSource"
 private const val EXTERNAL_TEMP_GETTER = "getEXTERNALTEMPERATURE_C"
 private const val EXTERNAL_TEMP_CALLBACK = "onEXTERNALTEMPERATURE_C"
 private const val VEHICLE_SOURCE_LABEL = "Vehicle API"
+private val TEMPERATURE_GETTER_NAMES = listOf(
+    "getEXTERNALTEMPERATURE_C",
+    "getOutdoorTemp",
+    "outdoorTemp"
+)
+private val TEMPERATURE_FIELD_NAMES = listOf(
+    "outdoorTemp",
+    "externalTemperatureC",
+    "externalTempC"
+)
 
 internal class VehicleTemperatureSource(private val context: Context) {
     private val mutableUpdates = MutableStateFlow<WeatherFetchResult?>(null)
@@ -36,7 +47,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
             } else {
                 recordDiagnostic(
                     read.errorMessage
-                        ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C() returned no value."
+                        ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C()/outdoorTemp returned no value."
                 )
             }
         }
@@ -56,7 +67,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
         if (read.value == null) {
             recordDiagnostic(
                 read.errorMessage
-                    ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C() returned no value."
+                    ?: "A compatible manager was found, but getEXTERNALTEMPERATURE_C()/outdoorTemp returned no value."
             )
             return mutableUpdates.value
         }
@@ -75,16 +86,16 @@ internal class VehicleTemperatureSource(private val context: Context) {
         val attemptedTypes = linkedSetOf<String>()
         for (candidate in discoverCandidates()) {
             attemptedTypes += candidate.instance.javaClass.name
-            val getter = findExternalTemperatureGetter(candidate.instance.javaClass) ?: continue
+            val accessor = findExternalTemperatureAccessor(candidate.instance.javaClass) ?: continue
             val callbackRegistration = registerCallbackIfPossible(candidate.instance)
             AppLogger.log(
                 TAG,
-                "Using ${candidate.instance.javaClass.name} for $EXTERNAL_TEMP_GETTER" +
+                "Using ${candidate.instance.javaClass.name} for ${accessor.debugName}" +
                     if (callbackRegistration != null) " with live subscription" else " with getter fallback"
             )
             return TemperatureBinding(
                 manager = candidate.instance,
-                getter = getter,
+                accessor = accessor,
                 callbackRegistration = callbackRegistration,
                 releaseAction = candidate.releaseAction
             )
@@ -92,9 +103,9 @@ internal class VehicleTemperatureSource(private val context: Context) {
         val attemptedSummary = attemptedTypes.take(4).joinToString()
         recordDiagnostic(
             if (attemptedSummary.isBlank()) {
-                "No compatible car manager exposing getEXTERNALTEMPERATURE_C() was found."
+                "No compatible car manager exposing getEXTERNALTEMPERATURE_C()/outdoorTemp was found."
             } else {
-                "No compatible car manager exposing getEXTERNALTEMPERATURE_C() was found. Checked: $attemptedSummary"
+                "No compatible car manager exposing getEXTERNALTEMPERATURE_C()/outdoorTemp was found. Checked: $attemptedSummary"
             }
         )
         return null
@@ -222,16 +233,39 @@ internal class VehicleTemperatureSource(private val context: Context) {
         return type.simpleName.contains("Manager", ignoreCase = true) ||
             type.simpleName.contains("Vehicle", ignoreCase = true) ||
             type.simpleName.contains("Car", ignoreCase = true) ||
-            findExternalTemperatureGetter(type) != null
+            findExternalTemperatureAccessor(type) != null
     }
 
-    private fun findExternalTemperatureGetter(type: Class<*>): Method? {
-        val method = allMethods(type).firstOrNull { candidate ->
-            (candidate.name == EXTERNAL_TEMP_GETTER || candidate.name.contains(EXTERNAL_TEMP_GETTER, ignoreCase = true)) &&
-                candidate.parameterCount == 0 &&
-                returnsNumericValue(candidate.returnType)
-        } ?: return null
-        return method
+    private fun findExternalTemperatureAccessor(type: Class<*>): TemperatureAccessor? {
+        val exactMethod = allMethods(type).firstOrNull { candidate ->
+            candidate.parameterCount == 0 &&
+                returnsNumericValue(candidate.returnType) &&
+                TEMPERATURE_GETTER_NAMES.any { alias ->
+                    candidate.name == alias || candidate.name.equals(alias, ignoreCase = true)
+                }
+        }
+        if (exactMethod != null) {
+            return TemperatureAccessor.MethodAccessor(exactMethod)
+        }
+
+        val exactField = allFields(type).firstOrNull { candidate ->
+            returnsNumericValue(candidate.type) &&
+                TEMPERATURE_FIELD_NAMES.any { alias ->
+                    candidate.name == alias || candidate.name.equals(alias, ignoreCase = true)
+                }
+        }
+        if (exactField != null) {
+            return TemperatureAccessor.FieldAccessor(exactField)
+        }
+
+        val looseMethod = allMethods(type).firstOrNull { candidate ->
+            candidate.parameterCount == 0 &&
+                returnsNumericValue(candidate.returnType) &&
+                TEMPERATURE_GETTER_NAMES.any { alias ->
+                    candidate.name.contains(alias, ignoreCase = true)
+                }
+        }
+        return looseMethod?.let(TemperatureAccessor::MethodAccessor)
     }
 
     private fun registerCallbackIfPossible(manager: Any): CallbackRegistration? {
@@ -384,7 +418,7 @@ internal class VehicleTemperatureSource(private val context: Context) {
                 sourceLabel = VEHICLE_SOURCE_LABEL
             ),
             status = status,
-            vehicleOutsideTemperatureC = value,
+            outdoorTemp = value,
             vehicleTemperatureDiagnostic = status
         )
         mutableUpdates.value = result
@@ -484,12 +518,12 @@ internal class VehicleTemperatureSource(private val context: Context) {
 
     private data class TemperatureBinding(
         val manager: Any,
-        val getter: Method,
+        val accessor: TemperatureAccessor,
         val callbackRegistration: CallbackRegistration?,
         val releaseAction: (() -> Unit)?
     ) {
         fun readCurrentTemperature(): TemperatureReadResult {
-            return runCatching { getter.invoke(manager) }
+            return runCatching { accessor.read(manager) }
                 .fold(
                     onSuccess = { rawValue ->
                         val value = (rawValue as? Number)?.toFloat()?.takeUnless { it.isNaN() }
@@ -497,13 +531,13 @@ internal class VehicleTemperatureSource(private val context: Context) {
                             TemperatureReadResult(value = value)
                         } else {
                             TemperatureReadResult(
-                                errorMessage = "${manager.javaClass.name}.${getter.name}() returned ${rawValue?.javaClass?.name ?: "null"}."
+                                errorMessage = "${manager.javaClass.name}.${accessor.debugName} returned ${rawValue?.javaClass?.name ?: "null"}."
                             )
                         }
                     },
                     onFailure = { error ->
                         TemperatureReadResult(
-                            errorMessage = "${manager.javaClass.name}.${getter.name}() failed: ${describeThrowable(error)}"
+                            errorMessage = "${manager.javaClass.name}.${accessor.debugName} failed: ${describeThrowable(error)}"
                         )
                     }
                 )
@@ -519,6 +553,21 @@ internal class VehicleTemperatureSource(private val context: Context) {
         val value: Float? = null,
         val errorMessage: String? = null
     )
+
+    private sealed interface TemperatureAccessor {
+        val debugName: String
+        fun read(target: Any): Any?
+
+        data class MethodAccessor(private val method: Method) : TemperatureAccessor {
+            override val debugName: String = "${method.name}()"
+            override fun read(target: Any): Any? = method.invoke(target)
+        }
+
+        data class FieldAccessor(private val field: Field) : TemperatureAccessor {
+            override val debugName: String = field.name
+            override fun read(target: Any): Any? = field.get(target)
+        }
+    }
 
     private class CallbackRegistration(private val releaseAction: (() -> Unit)?) {
         fun close() {

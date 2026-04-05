@@ -5,9 +5,9 @@ data class OverlaySettings(
     val clockEnabled: Boolean = true,
     val weatherEnabled: Boolean = true,
     val internetWeatherEnabled: Boolean = false,
-    val clockOffsetXDp: Int = 1376,
-    val clockOffsetYDp: Int = -52,
-    val weatherOffsetXDp: Int = 1420,
+    val clockOffsetXDp: Int = 1361,
+    val clockOffsetYDp: Int = -57,
+    val weatherOffsetXDp: Int = 1289,
     val weatherOffsetYDp: Int = 62,
     val clockFontSizeSp: Int = 34,
     val weatherFontSizeSp: Int = 18

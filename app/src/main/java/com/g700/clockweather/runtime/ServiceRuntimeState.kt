@@ -1,5 +1,6 @@
 package com.g700.clockweather.runtime
 
+import com.g700.clockweather.models.VehicleState
 import com.g700.clockweather.overlay.OverlayWeatherState
 
 enum class ServiceRuntimePhase {
@@ -20,7 +21,7 @@ data class ServiceRuntimeState(
     val overlayDisplayName: String? = null,
     val weatherStatus: String = "Weather idle.",
     val weatherState: OverlayWeatherState? = null,
-    val vehicleOutsideTemperatureC: Float? = null,
+    val vehicleState: VehicleState = VehicleState(),
     val vehicleTemperatureDiagnostic: String = "Waiting for vehicle temperature.",
     val lastAction: String = "Waiting",
     val lastError: String? = null,

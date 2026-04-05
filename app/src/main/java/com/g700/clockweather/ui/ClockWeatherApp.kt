@@ -321,7 +321,7 @@ private fun MainControlScreen(
                 )
                 StatusLine(
                     label = "Vehicle Temp",
-                    value = uiState.runtime.vehicleOutsideTemperatureC?.let(::formatTemperature) ?: "--"
+                    value = uiState.runtime.vehicleState.outdoorTemp?.let(::formatTemperature) ?: "--"
                 )
                 StatusLine(
                     label = "Vehicle API",
@@ -799,7 +799,7 @@ private fun overlaySourceLabel(uiState: AppUiState): String {
 
 private fun overlayTemperatureLabel(uiState: AppUiState): String {
     val overlayTemperature = uiState.runtime.weatherState?.outsideTemperatureC
-        ?: if (!uiState.settings.overlay.internetWeatherEnabled) uiState.runtime.vehicleOutsideTemperatureC else null
+        ?: if (!uiState.settings.overlay.internetWeatherEnabled) uiState.runtime.vehicleState.outdoorTemp else null
     return overlayTemperature?.let(::formatTemperature) ?: "--"
 }
 

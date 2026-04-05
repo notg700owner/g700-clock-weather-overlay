@@ -20,6 +20,13 @@ interface OverlayWeatherProvider {
 
 class RuntimeWeatherProvider : OverlayWeatherProvider {
     override val weather: Flow<OverlayWeatherState?> = ServiceRuntimeBus.state
-        .map { it.weatherState }
+        .map { runtime ->
+            runtime.weatherState ?: runtime.vehicleState.outdoorTemp?.let { outsideTemperature ->
+                OverlayWeatherState(
+                    outsideTemperatureC = outsideTemperature,
+                    sourceLabel = "Vehicle API"
+                )
+            }
+        }
         .distinctUntilChanged()
 }

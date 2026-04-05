@@ -12,12 +12,65 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 object SettingsStore {
     private const val PREFS = "g700_clock_weather_settings"
+    private const val LEGACY_CLOCK_X = 1376
+    private const val LEGACY_CLOCK_Y = -52
+    private const val LEGACY_WEATHER_X = 1420
+    private const val LEGACY_WEATHER_Y = 62
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun load(context: Context): AppSettings {
         val p = prefs(context)
         val defaults = AppSettings().normalized()
+        val storedClockX = p.getInt("clockOffsetXDp", defaults.overlay.clockOffsetXDp)
+        val storedClockY = p.getInt("clockOffsetYDp", defaults.overlay.clockOffsetYDp)
+        val storedWeatherX = p.getInt("weatherOffsetXDp", defaults.overlay.weatherOffsetXDp)
+        val storedWeatherY = p.getInt("weatherOffsetYDp", defaults.overlay.weatherOffsetYDp)
+
+        val migratedClockX = if (
+            p.contains("clockOffsetXDp") &&
+            p.contains("clockOffsetYDp") &&
+            storedClockX == LEGACY_CLOCK_X &&
+            storedClockY == LEGACY_CLOCK_Y
+        ) {
+            defaults.overlay.clockOffsetXDp
+        } else {
+            storedClockX
+        }
+
+        val migratedClockY = if (
+            p.contains("clockOffsetXDp") &&
+            p.contains("clockOffsetYDp") &&
+            storedClockX == LEGACY_CLOCK_X &&
+            storedClockY == LEGACY_CLOCK_Y
+        ) {
+            defaults.overlay.clockOffsetYDp
+        } else {
+            storedClockY
+        }
+
+        val migratedWeatherX = if (
+            p.contains("weatherOffsetXDp") &&
+            p.contains("weatherOffsetYDp") &&
+            storedWeatherX == LEGACY_WEATHER_X &&
+            storedWeatherY == LEGACY_WEATHER_Y
+        ) {
+            defaults.overlay.weatherOffsetXDp
+        } else {
+            storedWeatherX
+        }
+
+        val migratedWeatherY = if (
+            p.contains("weatherOffsetXDp") &&
+            p.contains("weatherOffsetYDp") &&
+            storedWeatherX == LEGACY_WEATHER_X &&
+            storedWeatherY == LEGACY_WEATHER_Y
+        ) {
+            defaults.overlay.weatherOffsetYDp
+        } else {
+            storedWeatherY
+        }
+
         return AppSettings(
             service = ServiceSettings(
                 autoStartOnBoot = p.getBoolean("autoStartOnBoot", defaults.service.autoStartOnBoot),
@@ -28,10 +81,10 @@ object SettingsStore {
                 clockEnabled = p.getBoolean("clockEnabled", defaults.overlay.clockEnabled),
                 weatherEnabled = p.getBoolean("weatherEnabled", defaults.overlay.weatherEnabled),
                 internetWeatherEnabled = p.getBoolean("internetWeatherEnabled", defaults.overlay.internetWeatherEnabled),
-                clockOffsetXDp = p.getInt("clockOffsetXDp", defaults.overlay.clockOffsetXDp),
-                clockOffsetYDp = p.getInt("clockOffsetYDp", defaults.overlay.clockOffsetYDp),
-                weatherOffsetXDp = p.getInt("weatherOffsetXDp", defaults.overlay.weatherOffsetXDp),
-                weatherOffsetYDp = p.getInt("weatherOffsetYDp", defaults.overlay.weatherOffsetYDp),
+                clockOffsetXDp = migratedClockX,
+                clockOffsetYDp = migratedClockY,
+                weatherOffsetXDp = migratedWeatherX,
+                weatherOffsetYDp = migratedWeatherY,
                 clockFontSizeSp = p.getInt("clockFontSizeSp", defaults.overlay.clockFontSizeSp),
                 weatherFontSizeSp = p.getInt("weatherFontSizeSp", defaults.overlay.weatherFontSizeSp)
             )

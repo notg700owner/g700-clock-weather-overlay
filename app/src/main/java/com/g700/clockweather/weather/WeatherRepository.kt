@@ -20,7 +20,7 @@ data class WeatherFetchResult(
     val state: OverlayWeatherState? = null,
     val status: String,
     val errorMessage: String? = null,
-    val vehicleOutsideTemperatureC: Float? = null,
+    val outdoorTemp: Float? = null,
     val vehicleTemperatureDiagnostic: String? = null
 )
 
@@ -86,7 +86,7 @@ class WeatherRepository(private val context: Context) {
         return@withContext runCatching {
             fetchInternetWeather(location).copy(
                 status = "Internet weather active.",
-                vehicleOutsideTemperatureC = vehicleWeather?.vehicleOutsideTemperatureC,
+                outdoorTemp = vehicleWeather?.outdoorTemp,
                 vehicleTemperatureDiagnostic = vehicleFailure ?: vehicleWeather?.vehicleTemperatureDiagnostic
             )
         }.getOrElse { error ->

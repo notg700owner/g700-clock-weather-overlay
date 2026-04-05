@@ -9,6 +9,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.g700.clockweather.core.AppLogger
 import com.g700.clockweather.models.AppSettings
+import com.g700.clockweather.models.VehicleState
 import com.g700.clockweather.overlay.HdmiOverlayManager
 import com.g700.clockweather.overlay.RuntimeWeatherProvider
 import com.g700.clockweather.runtime.ServiceRuntimeBus
@@ -155,7 +156,7 @@ class OverlayService : Service() {
                         weatherStatus = when {
                             !weatherStillAllowed -> "Weather overlay off."
                             previousSettings.overlay.internetWeatherEnabled && !settings.overlay.internetWeatherEnabled -> {
-                                if (it.vehicleOutsideTemperatureC != null) "Using vehicle temperature." else "Waiting for vehicle temperature."
+                                if (it.vehicleState.outdoorTemp != null) "Using vehicle temperature." else "Waiting for vehicle temperature."
                             }
                             !previousSettings.overlay.weatherEnabled && settings.overlay.weatherEnabled -> {
                                 if (settings.overlay.internetWeatherEnabled) "Waiting for internet weather refresh." else "Waiting for vehicle temperature."
@@ -202,7 +203,9 @@ class OverlayService : Service() {
                         clockVisible = settings.overlay.clockEnabled || settings.overlay.calibrationMode,
                         weatherVisible = settings.overlay.weatherEnabled || settings.overlay.calibrationMode,
                         weatherState = result.state,
-                        vehicleOutsideTemperatureC = result.vehicleOutsideTemperatureC,
+                        vehicleState = VehicleState(
+                            outdoorTemp = result.outdoorTemp ?: it.vehicleState.outdoorTemp
+                        ),
                         weatherStatus = if (settings.overlay.internetWeatherEnabled) {
                             "Using vehicle temperature until internet weather is available."
                         } else {
@@ -280,7 +283,9 @@ class OverlayService : Service() {
                 clockVisible = settings.overlay.clockEnabled || settings.overlay.calibrationMode,
                 weatherVisible = settings.overlay.weatherEnabled || settings.overlay.calibrationMode,
                 weatherState = result.state,
-                vehicleOutsideTemperatureC = result.vehicleOutsideTemperatureC,
+                vehicleState = VehicleState(
+                    outdoorTemp = result.outdoorTemp ?: it.vehicleState.outdoorTemp
+                ),
                 weatherStatus = result.status,
                 vehicleTemperatureDiagnostic = result.vehicleTemperatureDiagnostic ?: "Waiting for vehicle temperature.",
                 lastWeatherRefreshAt = System.currentTimeMillis(),
