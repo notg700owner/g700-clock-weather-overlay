@@ -373,16 +373,19 @@ internal class VehicleTemperatureSource(private val context: Context) {
 
     private fun publishTemperature(value: Float, fromCallback: Boolean): WeatherFetchResult {
         diagnosticMessage = null
+        val status = if (fromCallback) {
+            "Vehicle temperature updated from callback."
+        } else {
+            "Using vehicle temperature."
+        }
         val result = WeatherFetchResult(
             state = OverlayWeatherState(
                 outsideTemperatureC = value,
                 sourceLabel = VEHICLE_SOURCE_LABEL
             ),
-            status = if (fromCallback) {
-                "Vehicle temperature updated from callback."
-            } else {
-                "Using vehicle temperature."
-            }
+            status = status,
+            vehicleOutsideTemperatureC = value,
+            vehicleTemperatureDiagnostic = status
         )
         mutableUpdates.value = result
         return result

@@ -2,6 +2,7 @@ package com.g700.clockweather.update
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.FileProvider
 import com.g700.clockweather.BuildConfig
@@ -21,11 +22,16 @@ data class RemoteUpdateManifest(
     val publishedAt: String?
 )
 
+data class InstalledBuild(
+    val versionCode: Int,
+    val versionName: String
+)
+
 class GitHubUpdateChecker(private val context: Context) {
     sealed interface UpdateCheckResult {
-        data class Available(val manifest: RemoteUpdateManifest) : UpdateCheckResult
-        data class UpToDate(val manifest: RemoteUpdateManifest) : UpdateCheckResult
-        data class Error(val message: String) : UpdateCheckResult
+        data class Available(val manifest: RemoteUpdateManifest, val installedBuild: InstalledBuild) : UpdateCheckResult
+        data class UpToDate(val manifest: RemoteUpdateManifest, val installedBuild: InstalledBuild) : UpdateCheckResult
+        data class Error(val message: String, val installedBuild: InstalledBuild?) : UpdateCheckResult
     }
 
     sealed interface InstallResult {
@@ -34,19 +40,17 @@ class GitHubUpdateChecker(private val context: Context) {
     }
 
     suspend fun check(): UpdateCheckResult = withContext(Dispatchers.IO) {
+        val installedBuild = installedBuild()
         runCatching {
-            val connection = URL(metadataUrl()).openConnection() as HttpURLConnection
+            val connection = openJsonConnection(metadataUrl())
             connection.requestMethod = "GET"
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 10_000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "G700ClockWeather/${BuildConfig.VERSION_NAME}")
             val statusCode = connection.responseCode
             if (statusCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
                 connection.disconnect()
                 return@runCatching UpdateCheckResult.Error(
-                    "Update feed returned HTTP $statusCode${if (errorBody.isNotBlank()) ": $errorBody" else ""}"
+                    "Update feed returned HTTP $statusCode${if (errorBody.isNotBlank()) ": $errorBody" else ""}",
+                    installedBuild = installedBuild
                 )
             }
 
@@ -60,13 +64,13 @@ class GitHubUpdateChecker(private val context: Context) {
                 notes = json.optString("notes").takeIf { it.isNotBlank() },
                 publishedAt = json.optString("publishedAt").takeIf { it.isNotBlank() }
             )
-            if (manifest.versionCode > BuildConfig.VERSION_CODE) {
-                UpdateCheckResult.Available(manifest)
+            if (manifest.versionCode > installedBuild.versionCode) {
+                UpdateCheckResult.Available(manifest, installedBuild)
             } else {
-                UpdateCheckResult.UpToDate(manifest)
+                UpdateCheckResult.UpToDate(manifest, installedBuild)
             }
         }.getOrElse { error ->
-            UpdateCheckResult.Error(error.message ?: error.javaClass.simpleName)
+            UpdateCheckResult.Error(error.message ?: error.javaClass.simpleName, installedBuild)
         }
     }
 
@@ -98,20 +102,69 @@ class GitHubUpdateChecker(private val context: Context) {
     }
 
     private fun metadataUrl(): String {
-        return "https://raw.githubusercontent.com/${BuildConfig.UPDATE_OWNER}/${BuildConfig.UPDATE_REPO}/${BuildConfig.UPDATE_BRANCH}/${BuildConfig.UPDATE_METADATA_PATH}"
+        return uncachedUrl(
+            "https://raw.githubusercontent.com/${BuildConfig.UPDATE_OWNER}/${BuildConfig.UPDATE_REPO}/${BuildConfig.UPDATE_BRANCH}/${BuildConfig.UPDATE_METADATA_PATH}"
+        )
     }
 
     private fun downloadFile(sourceUrl: String, destination: File) {
-        val connection = URL(sourceUrl).openConnection() as HttpURLConnection
-        connection.requestMethod = "GET"
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 30_000
-        connection.setRequestProperty("User-Agent", "G700ClockWeather/${BuildConfig.VERSION_NAME}")
+        val connection = openBinaryConnection(uncachedUrl(sourceUrl))
         connection.inputStream.use { input ->
             FileOutputStream(destination).use { output ->
                 input.copyTo(output)
             }
         }
         connection.disconnect()
+    }
+
+    private fun installedBuild(): InstalledBuild {
+        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, 0)
+        }
+        val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode.toInt()
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode
+        }
+        return InstalledBuild(
+            versionCode = versionCode,
+            versionName = info.versionName ?: BuildConfig.VERSION_NAME
+        )
+    }
+
+    private fun openJsonConnection(url: String): HttpURLConnection {
+        return openConnection(url).apply {
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/json")
+        }
+    }
+
+    private fun openBinaryConnection(url: String): HttpURLConnection {
+        return openConnection(url).apply {
+            requestMethod = "GET"
+        }
+    }
+
+    private fun openConnection(url: String): HttpURLConnection {
+        return (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 30_000
+            useCaches = false
+            setRequestProperty("User-Agent", "G700ClockWeather/${BuildConfig.VERSION_NAME}")
+            setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0")
+            setRequestProperty("Pragma", "no-cache")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                setRequestProperty("If-Modified-Since", "0")
+            }
+        }
+    }
+
+    private fun uncachedUrl(url: String): String {
+        val joiner = if (url.contains("?")) "&" else "?"
+        return "${url}${joiner}ts=${System.currentTimeMillis()}"
     }
 }

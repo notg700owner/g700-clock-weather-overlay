@@ -137,12 +137,31 @@ class OverlayService : Service() {
         settingsJob?.cancel()
         settingsJob = scope.launch {
             SettingsStore.observe(this@OverlayService).collectLatest { latest ->
+                val previousSettings = settings
                 settings = latest.normalized()
                 ServiceRuntimeBus.update {
+                    val weatherStillAllowed = settings.overlay.weatherEnabled || settings.overlay.calibrationMode
+                    val shouldClearInternetState = !settings.overlay.internetWeatherEnabled &&
+                        it.weatherState?.sourceLabel != "Vehicle API"
                     it.copy(
                         overlayArmed = settings.overlay.shouldRenderAnything(),
                         clockVisible = settings.overlay.clockEnabled || settings.overlay.calibrationMode,
                         weatherVisible = settings.overlay.weatherEnabled || settings.overlay.calibrationMode,
+                        weatherState = when {
+                            !weatherStillAllowed -> null
+                            shouldClearInternetState -> null
+                            else -> it.weatherState
+                        },
+                        weatherStatus = when {
+                            !weatherStillAllowed -> "Weather overlay off."
+                            previousSettings.overlay.internetWeatherEnabled && !settings.overlay.internetWeatherEnabled -> {
+                                if (it.vehicleOutsideTemperatureC != null) "Using vehicle temperature." else "Waiting for vehicle temperature."
+                            }
+                            !previousSettings.overlay.weatherEnabled && settings.overlay.weatherEnabled -> {
+                                if (settings.overlay.internetWeatherEnabled) "Waiting for internet weather refresh." else "Waiting for vehicle temperature."
+                            }
+                            else -> it.weatherStatus
+                        },
                         activeOverlays = settings.enabledOverlayLabels(),
                         phase = ServiceRuntimePhase.RUNNING
                     )
@@ -150,6 +169,11 @@ class OverlayService : Service() {
                 if (!settings.service.enabled) {
                     AppLogger.log(TAG, "Service disabled from settings")
                     stopSelf()
+                } else if (
+                    (previousSettings.overlay.internetWeatherEnabled != settings.overlay.internetWeatherEnabled) ||
+                    (!previousSettings.overlay.weatherEnabled && settings.overlay.weatherEnabled)
+                ) {
+                    launch { refreshWeather() }
                 }
             }
         }
@@ -178,11 +202,13 @@ class OverlayService : Service() {
                         clockVisible = settings.overlay.clockEnabled || settings.overlay.calibrationMode,
                         weatherVisible = settings.overlay.weatherEnabled || settings.overlay.calibrationMode,
                         weatherState = result.state,
+                        vehicleOutsideTemperatureC = result.vehicleOutsideTemperatureC,
                         weatherStatus = if (settings.overlay.internetWeatherEnabled) {
                             "Using vehicle temperature until internet weather is available."
                         } else {
                             result.status
                         },
+                        vehicleTemperatureDiagnostic = result.vehicleTemperatureDiagnostic ?: result.status,
                         lastWeatherRefreshAt = System.currentTimeMillis(),
                         lastAction = "Vehicle temperature updated",
                         lastError = result.errorMessage,
@@ -212,6 +238,7 @@ class OverlayService : Service() {
                                 serviceRunning = true,
                                 phase = ServiceRuntimePhase.RUNNING,
                                 weatherState = null,
+                                vehicleTemperatureDiagnostic = "Weather overlay off.",
                                 weatherStatus = "Weather overlay off.",
                                 lastAction = "Clock overlay active",
                                 lastError = null,
@@ -253,7 +280,9 @@ class OverlayService : Service() {
                 clockVisible = settings.overlay.clockEnabled || settings.overlay.calibrationMode,
                 weatherVisible = settings.overlay.weatherEnabled || settings.overlay.calibrationMode,
                 weatherState = result.state,
+                vehicleOutsideTemperatureC = result.vehicleOutsideTemperatureC,
                 weatherStatus = result.status,
+                vehicleTemperatureDiagnostic = result.vehicleTemperatureDiagnostic ?: "Waiting for vehicle temperature.",
                 lastWeatherRefreshAt = System.currentTimeMillis(),
                 lastAction = if (result.state != null) "Weather updated" else "Waiting for location",
                 lastError = result.errorMessage,

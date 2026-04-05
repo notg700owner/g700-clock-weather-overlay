@@ -19,7 +19,9 @@ import java.net.URL
 data class WeatherFetchResult(
     val state: OverlayWeatherState? = null,
     val status: String,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val vehicleOutsideTemperatureC: Float? = null,
+    val vehicleTemperatureDiagnostic: String? = null
 )
 
 class WeatherRepository(private val context: Context) {
@@ -45,7 +47,8 @@ class WeatherRepository(private val context: Context) {
         if (!preferInternetWeather) {
             return@withContext vehicleWeather ?: WeatherFetchResult(
                 status = "Vehicle temperature is unavailable.",
-                errorMessage = vehicleFailure ?: "The car did not return an exterior temperature value."
+                errorMessage = vehicleFailure ?: "The car did not return an exterior temperature value.",
+                vehicleTemperatureDiagnostic = vehicleFailure ?: "Vehicle temperature is unavailable."
             )
         }
 
@@ -54,7 +57,8 @@ class WeatherRepository(private val context: Context) {
                 status = "No internet connection. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "No internet connection.",
-                errorMessage = vehicleFailure ?: "Internet weather is enabled, but no network is connected and the vehicle temperature is unavailable."
+                errorMessage = vehicleFailure ?: "Internet weather is enabled, but no network is connected and the vehicle temperature is unavailable.",
+                vehicleTemperatureDiagnostic = vehicleFailure ?: "Vehicle temperature is unavailable."
             )
         }
 
@@ -63,7 +67,8 @@ class WeatherRepository(private val context: Context) {
                 status = "Location permission missing. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "Location permission is required for internet weather.",
-                errorMessage = vehicleFailure ?: "Grant location access to fetch internet weather."
+                errorMessage = vehicleFailure ?: "Grant location access to fetch internet weather.",
+                vehicleTemperatureDiagnostic = vehicleFailure ?: "Vehicle temperature is unavailable."
             )
         }
 
@@ -73,18 +78,24 @@ class WeatherRepository(private val context: Context) {
                 status = "Waiting for a GPS fix. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "Waiting for a GPS fix.",
-                errorMessage = vehicleFailure ?: "No cached location is available yet."
+                errorMessage = vehicleFailure ?: "No cached location is available yet.",
+                vehicleTemperatureDiagnostic = vehicleFailure ?: "Vehicle temperature is unavailable."
             )
         }
 
         return@withContext runCatching {
-            fetchInternetWeather(location).copy(status = "Internet weather active.")
+            fetchInternetWeather(location).copy(
+                status = "Internet weather active.",
+                vehicleOutsideTemperatureC = vehicleWeather?.vehicleOutsideTemperatureC,
+                vehicleTemperatureDiagnostic = vehicleFailure ?: vehicleWeather?.vehicleTemperatureDiagnostic
+            )
         }.getOrElse { error ->
             vehicleWeather?.copy(
                 status = "Internet weather failed. Using vehicle temperature."
             ) ?: WeatherFetchResult(
                 status = "Internet weather failed.",
-                errorMessage = vehicleFailure ?: error.message ?: error.javaClass.simpleName
+                errorMessage = vehicleFailure ?: error.message ?: error.javaClass.simpleName,
+                vehicleTemperatureDiagnostic = vehicleFailure ?: "Vehicle temperature is unavailable."
             )
         }
     }

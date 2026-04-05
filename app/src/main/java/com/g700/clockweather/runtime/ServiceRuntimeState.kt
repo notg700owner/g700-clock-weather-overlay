@@ -20,6 +20,8 @@ data class ServiceRuntimeState(
     val overlayDisplayName: String? = null,
     val weatherStatus: String = "Weather idle.",
     val weatherState: OverlayWeatherState? = null,
+    val vehicleOutsideTemperatureC: Float? = null,
+    val vehicleTemperatureDiagnostic: String = "Waiting for vehicle temperature.",
     val lastAction: String = "Waiting",
     val lastError: String? = null,
     val lastWeatherRefreshAt: Long? = null,

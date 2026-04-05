@@ -153,13 +153,15 @@ class AppRepository(private val context: Context) {
                     updateUiState.value = current.copy(
                         isChecking = false,
                         updateAvailable = true,
+                        installedVersionCode = result.installedBuild.versionCode,
+                        installedVersionName = result.installedBuild.versionName,
                         latestVersionCode = result.manifest.versionCode,
                         latestVersionName = result.manifest.versionName,
                         downloadUrl = result.manifest.apkUrl,
                         releaseNotes = result.manifest.notes,
                         publishedAt = result.manifest.publishedAt,
                         lastCheckedAt = System.currentTimeMillis(),
-                        statusMessage = "Update ${result.manifest.versionName} is available.",
+                        statusMessage = "Installed ${result.installedBuild.versionName}. Feed ${result.manifest.versionName} is available.",
                         errorMessage = null
                     )
                 }
@@ -167,19 +169,23 @@ class AppRepository(private val context: Context) {
                     updateUiState.value = current.copy(
                         isChecking = false,
                         updateAvailable = false,
+                        installedVersionCode = result.installedBuild.versionCode,
+                        installedVersionName = result.installedBuild.versionName,
                         latestVersionCode = result.manifest.versionCode,
                         latestVersionName = result.manifest.versionName,
                         downloadUrl = result.manifest.apkUrl,
                         releaseNotes = result.manifest.notes,
                         publishedAt = result.manifest.publishedAt,
                         lastCheckedAt = System.currentTimeMillis(),
-                        statusMessage = "This build is current.",
+                        statusMessage = "Installed ${result.installedBuild.versionName}. Feed ${result.manifest.versionName}. This build is current.",
                         errorMessage = null
                     )
                 }
                 is GitHubUpdateChecker.UpdateCheckResult.Error -> {
                     updateUiState.value = current.copy(
                         isChecking = false,
+                        installedVersionCode = result.installedBuild?.versionCode,
+                        installedVersionName = result.installedBuild?.versionName,
                         lastCheckedAt = System.currentTimeMillis(),
                         statusMessage = if (silent) current.statusMessage else "Could not reach the update feed.",
                         errorMessage = result.message

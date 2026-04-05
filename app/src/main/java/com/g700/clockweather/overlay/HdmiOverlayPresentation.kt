@@ -118,7 +118,9 @@ class HdmiOverlayPresentation(
             setBackgroundColor(Color.TRANSPARENT)
             setShadowLayer(14f, 0f, 0f, Color.argb(165, 0, 0, 0))
             setTypeface(Typeface.DEFAULT, if (defaultBold) Typeface.BOLD else Typeface.NORMAL)
-            gravity = Gravity.CENTER
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_END
+            minWidth = dpToPx(if (defaultBold) 180 else 320)
             includeFontPadding = false
         }
     }
@@ -153,10 +155,14 @@ private fun formatClockText(context: Context, now: Long): String {
 
 private fun weatherLabel(settings: OverlaySettings, state: OverlayWeatherState?): String? {
     if (state == null) {
-        return if (settings.calibrationMode) "28°C  Clear" else null
+        return if (settings.calibrationMode) "Weather  28.0°C" else "--"
     }
 
-    val temperature = state.outsideTemperatureC?.let { "${DecimalFormat("0.#").format(it)}°C" }
+    val temperature = state.outsideTemperatureC?.let { "${DecimalFormat("0.0").format(it)}°C" }
     val condition = state.conditionLabel
-    return listOfNotNull(temperature, condition).joinToString("  ").ifBlank { null }
+    return when {
+        !condition.isNullOrBlank() && !temperature.isNullOrBlank() -> "$condition  $temperature"
+        !temperature.isNullOrBlank() -> temperature
+        else -> "--"
+    }
 }

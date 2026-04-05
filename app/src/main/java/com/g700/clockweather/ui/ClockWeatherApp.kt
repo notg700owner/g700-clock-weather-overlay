@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
-import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -15,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -39,8 +39,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,11 +52,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.g700.clockweather.BuildConfig
 import com.g700.clockweather.models.AppUiState
 import com.g700.clockweather.startup.StartupPhase
 import com.g700.clockweather.viewmodel.AppViewModel
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 private enum class DeckPage {
@@ -70,16 +67,17 @@ private data class PermissionSnapshot(
     val installPermissionGranted: Boolean
 )
 
-private val ScreenBlack = Color(0xFF0A0A0A)
-private val ScreenBlackSoft = Color(0xFF101010)
-private val PanelBlack = Color(0xFF141414)
+private val ScreenBlack = Color(0xFF090909)
+private val ScreenBlackSoft = Color(0xFF0E0E0E)
+private val PanelBlack = Color(0xFF121212)
+private val PanelBlackSoft = Color(0xFF171717)
 private val BorderGray = Color(0xFF2A2A2A)
 private val TextPrimary = Color(0xFFF0F0F0)
-private val TextMuted = Color(0xFF8E8E8E)
-private val AccentTeal = Color(0xFF21D8E3)
-private val ActiveTile = Color(0xFFD8D8D8)
+private val TextMuted = Color(0xFF8D8D8D)
+private val AccentTeal = Color(0xFF20D7E3)
+private val ActiveTile = Color(0xFFD9D9D9)
 private val ActiveText = Color(0xFF171717)
-private val ErrorTint = Color(0xFFFF9B97)
+private val ErrorTint = Color(0xFFFFA29D)
 
 @Composable
 fun ClockWeatherApp(viewModel: AppViewModel) {
@@ -112,6 +110,7 @@ fun ClockWeatherApp(viewModel: AppViewModel) {
                 onReEnableAutoStart = viewModel::reEnableAutoStart,
                 onResetProtection = viewModel::resetStartupProtection
             )
+
             DeckPage.CALIBRATION -> CalibrationScreen(
                 uiState = uiState,
                 onDone = {
@@ -213,45 +212,16 @@ private fun AppFrame(content: @Composable ColumnScope.() -> Unit) {
                     colors = listOf(ScreenBlack, ScreenBlackSoft, ScreenBlack)
                 )
             )
-            .padding(horizontal = 28.dp, vertical = 18.dp)
+            .padding(horizontal = 22.dp, vertical = 20.dp)
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            TopBar()
-            Spacer(Modifier.height(20.dp))
-            Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 860.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    content = content
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TopBar() {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "Clock & Weather",
-            style = MaterialTheme.typography.titleMedium,
-            color = TextMuted
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = rememberUiClockText(),
-            style = MaterialTheme.typography.headlineSmall,
-            color = TextPrimary,
-            fontWeight = FontWeight.Medium
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 1320.dp)
+                .align(Alignment.TopCenter)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            content = content
         )
     }
 }
@@ -273,133 +243,157 @@ private fun MainControlScreen(
 ) {
     ScreenIntro(
         title = "Overlay Control",
-        subtitle = "Basic controls for the secondary-display clock and external temperature overlay."
+        subtitle = "Basic controls for the secondary-display clock and weather overlay."
     )
 
-    SectionPanel(
-        title = "Overlay",
-        subtitle = "Only the pieces you want to render."
-    ) {
-        SettingRow(
-            label = "Clock",
-            detail = "Show the clock on the overlay.",
-            checked = uiState.settings.overlay.clockEnabled,
-            onToggle = onClockToggle
-        )
-        SettingRow(
-            label = "Weather",
-            detail = "Show outside temperature on the overlay.",
-            checked = uiState.settings.overlay.weatherEnabled,
-            onToggle = onWeatherToggle
-        )
-        if (uiState.settings.overlay.weatherEnabled) {
-            SettingRow(
-                label = "Internet Weather",
-                detail = "Use online weather when reachable, otherwise fall back to the car temperature.",
-                checked = uiState.settings.overlay.internetWeatherEnabled,
-                onToggle = onInternetWeatherToggle
-            )
-        }
-    }
-
-    SectionPanel(
-        title = "System",
-        subtitle = "Live status and boot protection."
-    ) {
-        StatusLine(
-            label = "Display",
-            value = if (uiState.runtime.overlayAttached) {
-                uiState.runtime.overlayDisplayName ?: "Secondary display attached"
-            } else {
-                "Waiting for secondary display"
-            }
-        )
-        SettingRow(
-            label = "Start On Boot",
-            detail = "Protected by the failure detector after repeated unhealthy launches.",
-            checked = uiState.settings.service.autoStartOnBoot,
-            onToggle = onAutoStartToggle
-        )
-        StatusLine(
-            label = "Autostart",
-            value = startupLabel(uiState)
-        )
-        if (uiState.settings.overlay.weatherEnabled) {
-            StatusLine(
-                label = "Source",
-                value = uiState.runtime.weatherState?.sourceLabel ?: if (uiState.settings.overlay.internetWeatherEnabled) {
-                    "Car fallback"
-                } else {
-                    "Vehicle API"
+    ResponsiveColumns(
+        leftContent = {
+            SectionPanel(
+                title = "Overlay",
+                subtitle = "Keep only the elements you actually want on display 2."
+            ) {
+                SettingRow(
+                    label = "Clock",
+                    detail = "Show the clock on the overlay.",
+                    checked = uiState.settings.overlay.clockEnabled,
+                    onToggle = onClockToggle
+                )
+                SettingRow(
+                    label = "Weather",
+                    detail = "Show outside temperature on the overlay.",
+                    checked = uiState.settings.overlay.weatherEnabled,
+                    onToggle = onWeatherToggle
+                )
+                if (uiState.settings.overlay.weatherEnabled) {
+                    SettingRow(
+                        label = "Internet Weather",
+                        detail = "Use online weather when reachable, otherwise fall back to the vehicle temperature.",
+                        checked = uiState.settings.overlay.internetWeatherEnabled,
+                        onToggle = onInternetWeatherToggle
+                    )
                 }
-            )
-            StatusLine(
-                label = "External Temp",
-                value = uiState.runtime.weatherState?.outsideTemperatureC?.let { formatTemperature(it) } ?: "--"
-            )
-            StatusLine(
-                label = "Weather Status",
-                value = uiState.runtime.weatherStatus
-            )
-        }
-        if (uiState.startupProtection.autoStartBlocked) {
-            Spacer(Modifier.height(4.dp))
-            ButtonStrip(
-                primaryLabel = "Re-enable Autostart",
-                onPrimaryClick = onReEnableAutoStart,
-                secondaryLabel = "Reset Counter",
-                onSecondaryClick = onResetProtection
-            )
-        }
-        if (!uiState.runtime.lastError.isNullOrBlank()) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = uiState.runtime.lastError.orEmpty(),
-                color = ErrorTint,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-    }
-
-    SectionPanel(
-        title = "Tools",
-        subtitle = "Calibration and update controls."
-    ) {
-        FullWidthActionButton(
-            label = "Calibrate",
-            onClick = onCalibrate,
-            primary = false
-        )
-        Spacer(Modifier.height(10.dp))
-        if (uiState.update.updateAvailable) {
-            if (permissions.installPermissionGranted) {
-                ButtonStrip(
-                    primaryLabel = "Install ${uiState.update.latestVersionName ?: "Update"}",
-                    onPrimaryClick = onInstallUpdate,
-                    primaryEnabled = !uiState.update.isInstalling,
-                    secondaryLabel = "Check For Update",
-                    onSecondaryClick = onCheckForUpdate
-                )
-            } else {
-                ButtonStrip(
-                    primaryLabel = "Allow Install",
-                    onPrimaryClick = onOpenInstallSettings,
-                    secondaryLabel = "Check For Update",
-                    onSecondaryClick = onCheckForUpdate
-                )
             }
-        } else {
-            FullWidthActionButton(
-                label = "Check For Update",
-                onClick = onCheckForUpdate
-            )
+
+            SectionPanel(
+                title = "Startup",
+                subtitle = "Autostart stays protected by failure detection."
+            ) {
+                SettingRow(
+                    label = "Start On Boot",
+                    detail = "Disable this if you want manual launch only.",
+                    checked = uiState.settings.service.autoStartOnBoot,
+                    onToggle = onAutoStartToggle
+                )
+                StatusLine(
+                    label = "Autostart",
+                    value = startupLabel(uiState)
+                )
+                if (uiState.startupProtection.autoStartBlocked) {
+                    ButtonStrip(
+                        primaryLabel = "Re-enable Autostart",
+                        onPrimaryClick = onReEnableAutoStart,
+                        secondaryLabel = "Reset Counter",
+                        onSecondaryClick = onResetProtection
+                    )
+                }
+            }
+        },
+        rightContent = {
+            SectionPanel(
+                title = "Live Status",
+                subtitle = "Overlay output, vehicle temperature, and diagnostics."
+            ) {
+                StatusLine(
+                    label = "Display",
+                    value = if (uiState.runtime.overlayAttached) {
+                        uiState.runtime.overlayDisplayName ?: "Secondary display attached"
+                    } else {
+                        "Waiting for secondary display"
+                    }
+                )
+                StatusLine(
+                    label = "Overlay Source",
+                    value = overlaySourceLabel(uiState)
+                )
+                StatusLine(
+                    label = "Overlay Temp",
+                    value = overlayTemperatureLabel(uiState)
+                )
+                StatusLine(
+                    label = "Vehicle Temp",
+                    value = uiState.runtime.vehicleOutsideTemperatureC?.let(::formatTemperature) ?: "--"
+                )
+                StatusLine(
+                    label = "Vehicle API",
+                    value = uiState.runtime.vehicleTemperatureDiagnostic
+                )
+                StatusLine(
+                    label = "Weather Status",
+                    value = uiState.runtime.weatherStatus
+                )
+                if (!uiState.runtime.lastError.isNullOrBlank()) {
+                    Text(
+                        text = uiState.runtime.lastError.orEmpty(),
+                        color = ErrorTint,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            SectionPanel(
+                title = "Tools & Updates",
+                subtitle = "Calibration, install access, and update diagnostics."
+            ) {
+                FullWidthActionButton(
+                    label = "Calibrate",
+                    onClick = onCalibrate,
+                    primary = false
+                )
+                if (uiState.update.updateAvailable) {
+                    if (permissions.installPermissionGranted) {
+                        ButtonStrip(
+                            primaryLabel = "Install ${uiState.update.latestVersionName ?: "Update"}",
+                            onPrimaryClick = onInstallUpdate,
+                            primaryEnabled = !uiState.update.isInstalling,
+                            secondaryLabel = "Check For Update",
+                            onSecondaryClick = onCheckForUpdate
+                        )
+                    } else {
+                        ButtonStrip(
+                            primaryLabel = "Allow Install",
+                            onPrimaryClick = onOpenInstallSettings,
+                            secondaryLabel = "Check For Update",
+                            onSecondaryClick = onCheckForUpdate
+                        )
+                    }
+                } else {
+                    FullWidthActionButton(
+                        label = "Check For Update",
+                        onClick = onCheckForUpdate
+                    )
+                }
+                StatusLine(
+                    label = "Installed",
+                    value = uiState.update.installedVersionName ?: BuildConfig.VERSION_NAME
+                )
+                StatusLine(
+                    label = "Feed",
+                    value = uiState.update.latestVersionName ?: "--"
+                )
+                StatusLine(
+                    label = "Updater",
+                    value = uiState.update.statusMessage
+                )
+                if (!uiState.update.errorMessage.isNullOrBlank()) {
+                    Text(
+                        text = uiState.update.errorMessage.orEmpty(),
+                        color = ErrorTint,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
         }
-        Spacer(Modifier.height(10.dp))
-        StatusLine(
-            label = "Updater",
-            value = uiState.update.statusMessage
-        )
-    }
+    )
 }
 
 @Composable
@@ -418,25 +412,66 @@ private fun CalibrationScreen(
 
     ScreenIntro(
         title = "Calibration",
-        subtitle = "Adjust X and Y offsets for the clock and temperature overlay."
+        subtitle = "Adjust the clock and weather overlay offsets."
     )
 
-    SectionPanel(
-        title = "Calibration Actions",
-        subtitle = "This page stays out of the way until you open it from the main screen."
-    ) {
-        ButtonStrip(
-            primaryLabel = "Done",
-            onPrimaryClick = onDone,
-            secondaryLabel = "Reset Position",
-            onSecondaryClick = onReset
-        )
-    }
+    ResponsiveColumns(
+        leftContent = {
+            SectionPanel(
+                title = "Actions",
+                subtitle = "Leave calibration with the button below."
+            ) {
+                ButtonStrip(
+                    primaryLabel = "< Done",
+                    onPrimaryClick = onDone,
+                    secondaryLabel = "Reset Position",
+                    onSecondaryClick = onReset
+                )
+            }
 
-    AxisControlCard("Clock X", uiState.settings.overlay.clockOffsetXDp, onAdjustClockX)
-    AxisControlCard("Clock Y", uiState.settings.overlay.clockOffsetYDp, onAdjustClockY)
-    AxisControlCard("Weather X", uiState.settings.overlay.weatherOffsetXDp, onAdjustWeatherX)
-    AxisControlCard("Weather Y", uiState.settings.overlay.weatherOffsetYDp, onAdjustWeatherY)
+            AxisControlCard("Clock X", uiState.settings.overlay.clockOffsetXDp, onAdjustClockX)
+            AxisControlCard("Clock Y", uiState.settings.overlay.clockOffsetYDp, onAdjustClockY)
+        },
+        rightContent = {
+            AxisControlCard("Weather X", uiState.settings.overlay.weatherOffsetXDp, onAdjustWeatherX)
+            AxisControlCard("Weather Y", uiState.settings.overlay.weatherOffsetYDp, onAdjustWeatherY)
+        }
+    )
+}
+
+@Composable
+private fun ResponsiveColumns(
+    leftContent: @Composable ColumnScope.() -> Unit,
+    rightContent: @Composable ColumnScope.() -> Unit
+) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        if (maxWidth >= 1080.dp) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier.weight(1.18f),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                    content = leftContent
+                )
+                Column(
+                    modifier = Modifier.weight(0.92f),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                    content = rightContent
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                leftContent()
+                rightContent()
+            }
+        }
+    }
 }
 
 @Composable
@@ -449,7 +484,7 @@ private fun ScreenIntro(title: String, subtitle: String) {
         )
         Box(
             modifier = Modifier
-                .width(74.dp)
+                .width(80.dp)
                 .height(3.dp)
                 .background(AccentTeal, RoundedCornerShape(99.dp))
         )
@@ -476,8 +511,8 @@ private fun SectionPanel(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
@@ -563,11 +598,11 @@ private fun SegmentButton(
 ) {
     Box(
         modifier = Modifier
-            .width(118.dp)
+            .width(132.dp)
             .clip(RoundedCornerShape(7.dp))
             .background(if (selected) ActiveTile else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(vertical = 13.dp),
+            .padding(vertical = 14.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -669,17 +704,17 @@ private fun ActionButton(
 private fun StatusLine(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Top
     ) {
         Text(
             text = label,
+            modifier = Modifier.weight(0.34f),
             style = MaterialTheme.typography.bodyMedium,
             color = TextMuted
         )
-        Spacer(Modifier.width(20.dp))
         Text(
             text = value,
+            modifier = Modifier.weight(0.66f),
             style = MaterialTheme.typography.bodyLarge,
             color = TextPrimary,
             textAlign = TextAlign.End
@@ -701,12 +736,12 @@ private fun AxisControlCard(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            CalibrationButton("-100") { onAdjust(-100) }
-            CalibrationButton("-10") { onAdjust(-10) }
-            CalibrationButton("-1") { onAdjust(-1) }
-            CalibrationButton("+1") { onAdjust(1) }
-            CalibrationButton("+10") { onAdjust(10) }
-            CalibrationButton("+100") { onAdjust(100) }
+            CalibrationButton("-100", Modifier.weight(1f)) { onAdjust(-100) }
+            CalibrationButton("-10", Modifier.weight(1f)) { onAdjust(-10) }
+            CalibrationButton("-1", Modifier.weight(1f)) { onAdjust(-1) }
+            CalibrationButton("+1", Modifier.weight(1f)) { onAdjust(1) }
+            CalibrationButton("+10", Modifier.weight(1f)) { onAdjust(10) }
+            CalibrationButton("+100", Modifier.weight(1f)) { onAdjust(100) }
         }
     }
 }
@@ -714,40 +749,27 @@ private fun AxisControlCard(
 @Composable
 private fun CalibrationButton(
     label: String,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = ScreenBlack,
+        color = PanelBlackSoft,
         border = BorderStroke(1.dp, BorderGray),
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
     ) {
         Text(
             text = label,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 13.dp),
             style = MaterialTheme.typography.labelLarge,
-            color = TextPrimary
+            color = TextPrimary,
+            textAlign = TextAlign.Center
         )
     }
-}
-
-@Composable
-private fun rememberUiClockText(): String {
-    val context = LocalContext.current
-    val locale = Locale.getDefault()
-    val pattern = if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm"
-    val formatter = remember(pattern, locale) { SimpleDateFormat(pattern, locale) }
-    val currentText by produceState(initialValue = formatter.format(Date())) {
-        while (true) {
-            val now = System.currentTimeMillis()
-            value = formatter.format(Date(now))
-            val nextMinuteDelay = (60_000L - (now % 60_000L)).coerceAtLeast(1_000L)
-            kotlinx.coroutines.delay(nextMinuteDelay)
-        }
-    }
-    return currentText
 }
 
 @Composable
@@ -766,9 +788,23 @@ private fun startupLabel(uiState: AppUiState): String {
     }
 }
 
+private fun overlaySourceLabel(uiState: AppUiState): String {
+    return when {
+        !uiState.settings.overlay.weatherEnabled -> "Weather off"
+        uiState.runtime.weatherState != null -> uiState.runtime.weatherState.sourceLabel
+        uiState.settings.overlay.internetWeatherEnabled -> "Waiting for internet weather"
+        else -> "Vehicle API"
+    }
+}
+
+private fun overlayTemperatureLabel(uiState: AppUiState): String {
+    val overlayTemperature = uiState.runtime.weatherState?.outsideTemperatureC
+        ?: if (!uiState.settings.overlay.internetWeatherEnabled) uiState.runtime.vehicleOutsideTemperatureC else null
+    return overlayTemperature?.let(::formatTemperature) ?: "--"
+}
+
 private fun formatTemperature(value: Float): String {
-    val rounded = if (value % 1f == 0f) value.toInt().toString() else String.format(Locale.US, "%.1f", value)
-    return "$rounded°C"
+    return String.format(Locale.US, "%.1f°C", value)
 }
 
 private fun hasForegroundLocationPermission(context: Context): Boolean {

@@ -7,6 +7,8 @@ data class UpdateUiState(
     val isChecking: Boolean = false,
     val isInstalling: Boolean = false,
     val updateAvailable: Boolean = false,
+    val installedVersionCode: Int? = null,
+    val installedVersionName: String? = null,
     val latestVersionCode: Int? = null,
     val latestVersionName: String? = null,
     val downloadUrl: String? = null,
